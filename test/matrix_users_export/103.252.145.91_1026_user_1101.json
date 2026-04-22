@@ -1,0 +1,224 @@
+{
+  "user_id": "1101",
+  "panel": "103.252.145.91_1026",
+  "user_config": {
+    "status": "error",
+    "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/users?action=get&user-id=1101&format=xml"
+  },
+  "credentials": {
+    "card": {
+      "status": "error",
+      "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=2&user-id=1101&format=xml"
+    },
+    "finger": {
+      "finger_1": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=1"
+      },
+      "finger_2": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=2"
+      },
+      "finger_3": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=3"
+      },
+      "finger_4": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=4"
+      },
+      "finger_5": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=5"
+      },
+      "finger_6": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=6"
+      },
+      "finger_7": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=7"
+      },
+      "finger_8": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=8"
+      },
+      "finger_9": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=9"
+      },
+      "finger_10": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=1&user-id=1101&format=xml&finger-index=10"
+      }
+    },
+    "palm": {
+      "palm_1": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=1"
+      },
+      "palm_2": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=2"
+      },
+      "palm_3": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=3"
+      },
+      "palm_4": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=4"
+      },
+      "palm_5": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=5"
+      },
+      "palm_6": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=6"
+      },
+      "palm_7": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=7"
+      },
+      "palm_8": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=8"
+      },
+      "palm_9": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=9"
+      },
+      "palm_10": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=10"
+      },
+      "palm_11": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=3&user-id=1101&format=xml&palm-index=11"
+      }
+    },
+    "face": {
+      "face_1": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=1"
+      },
+      "face_2": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=2"
+      },
+      "face_3": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=3"
+      },
+      "face_4": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=4"
+      },
+      "face_5": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=5"
+      },
+      "face_6": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=6"
+      },
+      "face_7": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=7"
+      },
+      "face_8": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=8"
+      },
+      "face_9": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=9"
+      },
+      "face_10": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=10"
+      },
+      "face_11": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=11"
+      },
+      "face_12": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=12"
+      },
+      "face_13": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=13"
+      },
+      "face_14": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=14"
+      },
+      "face_15": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=15"
+      },
+      "face_16": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=16"
+      },
+      "face_17": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=17"
+      },
+      "face_18": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=18"
+      },
+      "face_19": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=19"
+      },
+      "face_20": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=20"
+      },
+      "face_21": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=21"
+      },
+      "face_22": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=22"
+      },
+      "face_23": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=23"
+      },
+      "face_24": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=24"
+      },
+      "face_25": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=25"
+      },
+      "face_26": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=26"
+      },
+      "face_27": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=27"
+      },
+      "face_28": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=28"
+      },
+      "face_29": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=29"
+      },
+      "face_30": {
+        "status": "error",
+        "error": "401 Client Error: Unauthorized for url: http://103.252.145.91:1026/device.cgi/credential?action=get&type=5&user-id=1101&format=xml&face-index=30"
+      }
+    }
+  }
+}
