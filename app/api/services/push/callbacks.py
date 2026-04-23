@@ -332,14 +332,20 @@ def _on_user_config_done(cfg: DeviceConfig, device: Device, db: Session) -> None
         mapping.device_response = {**existing_resp, "user_created_via_push": True}
         log.info("User config synced for user %s on device %d", user_id, device.device_id)
     else:
-        # Try to resolve tenant_id
+        # Try to resolve tenant_id from the correlation_id only — never fall
+        # back to int(user_id).  The device assigns matrix_user_ids from a
+        # sequential slot counter (1, 2, 3 …) which are unrelated to internal
+        # tenant_ids.  Using int(user_id) as tenant_id silently creates a
+        # DeviceUserMapping pointing at the wrong (or non-existent) tenant —
+        # the "ghost user" that appears in enrollment but not in the users list.
         tenant_id = _parse_tenant_id(cfg.correlation_id)
         if tenant_id is None:
-            try:
-                tenant_id = int(user_id)
-            except ValueError:
-                log.warning("User config done but can't resolve tenant_id from user_id=%s", user_id)
-                return
+            log.warning(
+                "User config done for user %s on device %d but tenant_id could not be "
+                "resolved from correlation_id=%s — skipping mapping creation",
+                user_id, device.device_id, cfg.correlation_id,
+            )
+            return
 
         db.add(DeviceUserMapping(
             tenant_id=tenant_id,
@@ -351,7 +357,7 @@ def _on_user_config_done(cfg: DeviceConfig, device: Device, db: Session) -> None
             sync_attempt_count=1,
             device_response={"user_created_via_push": True},
         ))
-        log.info("User config: created mapping for tenant %s on device %d", user_id, device.device_id)
+        log.info("User config: created mapping for tenant %d on device %d", tenant_id, device.device_id)
 
     db.flush()
 

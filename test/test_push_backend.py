@@ -602,3 +602,53 @@ def test_assert_required_schema_patches_legacy_push_queue_tables(monkeypatch):
     assert any("ALTER TABLE public.device_config ADD COLUMN IF NOT EXISTS correlation_id" in stmt for stmt in executed)
     assert any("CREATE INDEX IF NOT EXISTS idx_devcmd_correlation" in stmt for stmt in executed)
     assert any("CREATE INDEX IF NOT EXISTS idx_devcfg_correlation" in stmt for stmt in executed)
+
+
+def test_assert_required_schema_patches_log_delete_cascades(monkeypatch):
+    executed: list[str] = []
+
+    class FakeConnection:
+        def execute(self, statement):
+            executed.append(str(statement))
+
+    class FakeBegin:
+        def __enter__(self):
+            return FakeConnection()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return FakeBegin()
+
+    tables = {
+        "company": schema_guard.REQUIRED_SCHEMA["company"],
+        "app_user": schema_guard.REQUIRED_SCHEMA["app_user"],
+        "auth_token": schema_guard.REQUIRED_SCHEMA["auth_token"],
+        "site": schema_guard.REQUIRED_SCHEMA["site"],
+        "tenant": schema_guard.REQUIRED_SCHEMA["tenant"],
+        "tenant_group": schema_guard.REQUIRED_SCHEMA["tenant_group"],
+        "device": schema_guard.REQUIRED_SCHEMA["device"],
+        "device_command": schema_guard.REQUIRED_SCHEMA["device_command"],
+        "device_config": schema_guard.REQUIRED_SCHEMA["device_config"],
+        "access_event": set(),
+        "access_validation_log": set(),
+    }
+
+    inspectors = iter([FakeInspector(tables), FakeInspector(tables)])
+    monkeypatch.setattr(schema_guard, "inspect", lambda engine: next(inspectors))
+    monkeypatch.setattr(
+        schema_guard.Base.metadata,
+        "create_all",
+        lambda bind, tables, checkfirst=True: None,
+    )
+
+    schema_guard.assert_required_schema(FakeEngine())
+
+    assert any("access_event_device_id_fkey" in stmt and "ON DELETE CASCADE" in stmt for stmt in executed)
+    assert any("access_event_company_id_fkey" in stmt and "ON DELETE CASCADE" in stmt for stmt in executed)
+    assert any(
+        "access_validation_log_access_event_id_fkey" in stmt and "ON DELETE CASCADE" in stmt
+        for stmt in executed
+    )

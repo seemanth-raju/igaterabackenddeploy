@@ -2,11 +2,60 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.api.services.companies.schema import CompanyCreate, CompanyUpdate
 from database.models import Company, Device, Tenant
+
+
+DELETE_COMPANY_VALIDATION_LOGS_SQL = """
+WITH company_devices AS (
+    SELECT device_id
+    FROM public.device
+    WHERE company_id = CAST(:company_id AS uuid)
+),
+company_sites AS (
+    SELECT site_id
+    FROM public.site
+    WHERE company_id = CAST(:company_id AS uuid)
+),
+company_tenants AS (
+    SELECT tenant_id
+    FROM public.tenant
+    WHERE company_id = CAST(:company_id AS uuid)
+),
+company_events AS (
+    SELECT event_id
+    FROM public.access_event
+    WHERE company_id = CAST(:company_id AS uuid)
+       OR device_id IN (SELECT device_id FROM company_devices)
+       OR tenant_id IN (SELECT tenant_id FROM company_tenants)
+)
+DELETE FROM public.access_validation_log
+WHERE access_event_id IN (SELECT event_id FROM company_events)
+   OR device_id IN (SELECT device_id FROM company_devices)
+   OR site_id IN (SELECT site_id FROM company_sites)
+   OR tenant_id IN (SELECT tenant_id FROM company_tenants)
+"""
+
+
+DELETE_COMPANY_ACCESS_EVENTS_SQL = """
+WITH company_devices AS (
+    SELECT device_id
+    FROM public.device
+    WHERE company_id = CAST(:company_id AS uuid)
+),
+company_tenants AS (
+    SELECT tenant_id
+    FROM public.tenant
+    WHERE company_id = CAST(:company_id AS uuid)
+)
+DELETE FROM public.access_event
+WHERE company_id = CAST(:company_id AS uuid)
+   OR device_id IN (SELECT device_id FROM company_devices)
+   OR tenant_id IN (SELECT tenant_id FROM company_tenants)
+"""
 
 
 def _enforce_quota(*, limit: int | None, current_count: int, increment: int, detail: str) -> None:
@@ -110,5 +159,8 @@ def update_company(company_id: UUID, payload: CompanyUpdate, db: Session) -> Com
 
 def delete_company(company_id: UUID, db: Session) -> None:
     company = get_company(company_id, db)
+    params = {"company_id": str(company_id)}
+    db.execute(text(DELETE_COMPANY_VALIDATION_LOGS_SQL), params)
+    db.execute(text(DELETE_COMPANY_ACCESS_EVENTS_SQL), params)
     db.delete(company)
     db.commit()

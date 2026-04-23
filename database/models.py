@@ -138,7 +138,7 @@ class Site(Base):
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
 
     company: Mapped["Company"] = relationship(back_populates="sites")
-    devices: Mapped[list["Device"]] = relationship(back_populates="site")
+    devices: Mapped[list["Device"]] = relationship(back_populates="site", passive_deletes=True)
 
 
 class Device(Base):
@@ -272,10 +272,10 @@ class AccessEvent(Base):
 
     event_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     company_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("company.company_id", ondelete="SET NULL")
+        UUID(as_uuid=True), ForeignKey("company.company_id", ondelete="CASCADE")
     )
-    device_id: Mapped[int | None] = mapped_column(ForeignKey("device.device_id", ondelete="SET NULL"))
-    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenant.tenant_id", ondelete="SET NULL"))
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("device.device_id", ondelete="CASCADE"))
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenant.tenant_id", ondelete="CASCADE"))
     device_seq_number: Mapped[int | None] = mapped_column(Integer)
     device_rollover_count: Mapped[int | None] = mapped_column(Integer)
     cosec_event_id: Mapped[int | None] = mapped_column(Integer)

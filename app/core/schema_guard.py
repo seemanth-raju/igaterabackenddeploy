@@ -230,6 +230,115 @@ TENANT_GROUP_PATCHES = (
 )
 
 
+ACCESS_EVENT_CASCADE_PATCHES = (
+    "ALTER TABLE public.access_event DROP CONSTRAINT IF EXISTS access_event_company_id_fkey",
+    "ALTER TABLE public.access_event ADD CONSTRAINT access_event_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.company(company_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.access_event DROP CONSTRAINT IF EXISTS access_event_device_id_fkey",
+    "ALTER TABLE public.access_event ADD CONSTRAINT access_event_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.access_event DROP CONSTRAINT IF EXISTS access_event_tenant_id_fkey",
+    "ALTER TABLE public.access_event ADD CONSTRAINT access_event_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenant(tenant_id) ON DELETE CASCADE NOT VALID",
+)
+
+
+ACCESS_VALIDATION_LOG_CASCADE_PATCHES = (
+    "ALTER TABLE public.access_validation_log DROP CONSTRAINT IF EXISTS access_validation_log_access_event_id_fkey",
+    "ALTER TABLE public.access_validation_log ADD CONSTRAINT access_validation_log_access_event_id_fkey FOREIGN KEY (access_event_id) REFERENCES public.access_event(event_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.access_validation_log DROP CONSTRAINT IF EXISTS access_validation_log_device_id_fkey",
+    "ALTER TABLE public.access_validation_log ADD CONSTRAINT access_validation_log_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.access_validation_log DROP CONSTRAINT IF EXISTS access_validation_log_site_id_fkey",
+    "ALTER TABLE public.access_validation_log ADD CONSTRAINT access_validation_log_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.site(site_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.access_validation_log DROP CONSTRAINT IF EXISTS access_validation_log_tenant_id_fkey",
+    "ALTER TABLE public.access_validation_log ADD CONSTRAINT access_validation_log_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenant(tenant_id) ON DELETE CASCADE NOT VALID",
+)
+
+
+# Ensure all device child tables have ON DELETE CASCADE so that deleting a
+# device does not fail with FK violations on databases that were created before
+# these cascade rules were established.
+DEVICE_CHILD_CASCADE_PATCHES = (
+    "ALTER TABLE public.device_user_mapping DROP CONSTRAINT IF EXISTS matrix_device_user_mapping_device_id_fkey",
+    "ALTER TABLE public.device_user_mapping ADD CONSTRAINT matrix_device_user_mapping_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.device_assignment_log DROP CONSTRAINT IF EXISTS device_assignment_log_device_id_fkey",
+    "ALTER TABLE public.device_assignment_log ADD CONSTRAINT device_assignment_log_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.tenant_device_access DROP CONSTRAINT IF EXISTS tenant_device_access_device_id_fkey",
+    "ALTER TABLE public.tenant_device_access ADD CONSTRAINT tenant_device_access_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.device_sync_log DROP CONSTRAINT IF EXISTS device_sync_log_device_id_fkey",
+    "ALTER TABLE public.device_sync_log ADD CONSTRAINT device_sync_log_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.device_command DROP CONSTRAINT IF EXISTS device_command_device_id_fkey",
+    "ALTER TABLE public.device_command ADD CONSTRAINT device_command_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+    "ALTER TABLE public.device_config DROP CONSTRAINT IF EXISTS device_config_device_id_fkey",
+    "ALTER TABLE public.device_config ADD CONSTRAINT device_config_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE NOT VALID",
+)
+
+
+# The device_assignment_log CHECK constraint in older databases only allowed 5
+# action values.  The ORM model and service layer use 3 more ('capture',
+# 'extract_fingerprint', 'enroll_site'), causing every capture/site-enroll
+# operation to fail with a constraint violation and roll back silently.
+DEVICE_ASSIGNMENT_LOG_ACTION_PATCH = (
+    "ALTER TABLE public.device_assignment_log DROP CONSTRAINT IF EXISTS device_assignment_log_action_check",
+    "ALTER TABLE public.device_assignment_log ADD CONSTRAINT device_assignment_log_action_check CHECK (action IN ('assign','revoke','update','enroll','unenroll','capture','extract_fingerprint','enroll_site'))",
+)
+
+
+# Enforce referential integrity for device → site (the ORM model declares this
+# FK but no DDL was ever emitted for existing databases).
+DEVICE_SITE_FK_PATCH = (
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE table_schema = 'public'
+              AND table_name   = 'device'
+              AND constraint_name = 'device_site_id_fkey'
+        ) THEN
+            ALTER TABLE public.device
+                ADD CONSTRAINT device_site_id_fkey
+                FOREIGN KEY (site_id) REFERENCES public.site(site_id) ON DELETE SET NULL NOT VALID;
+        END IF;
+    END $$;
+    """,
+)
+
+
+# Unique indexes ensure the ORM upsert logic (filter + .first()) works correctly.
+# We use CREATE UNIQUE INDEX IF NOT EXISTS so duplicate data from old bugs does
+# not block the startup — duplicates should be cleaned manually if they exist.
+TENANT_ACCESS_UNIQUE_PATCHES = (
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_indexes
+            WHERE schemaname = 'public' AND indexname = 'uq_tenant_device_access'
+        ) AND NOT EXISTS (
+            SELECT tenant_id, device_id FROM public.tenant_device_access
+            GROUP BY tenant_id, device_id HAVING count(*) > 1
+        ) THEN
+            CREATE UNIQUE INDEX uq_tenant_device_access
+                ON public.tenant_device_access (tenant_id, device_id);
+        END IF;
+    END $$;
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_indexes
+            WHERE schemaname = 'public' AND indexname = 'uq_tenant_site_access'
+        ) AND NOT EXISTS (
+            SELECT tenant_id, site_id FROM public.tenant_site_access
+            GROUP BY tenant_id, site_id HAVING count(*) > 1
+        ) THEN
+            CREATE UNIQUE INDEX uq_tenant_site_access
+                ON public.tenant_site_access (tenant_id, site_id);
+        END IF;
+    END $$;
+    """,
+)
+
+
 RUNTIME_INDEX_PATCHES = (
     "CREATE INDEX IF NOT EXISTS idx_devcmd_device ON public.device_command USING btree (device_id)",
     "CREATE INDEX IF NOT EXISTS idx_devcmd_status ON public.device_command USING btree (status)",
@@ -269,6 +378,41 @@ def _apply_runtime_schema_patches(engine: Engine) -> None:
 
         if inspector.has_table("tenant", schema="public") and inspector.has_table("tenant_group", schema="public"):
             for statement in TENANT_GROUP_PATCHES:
+                conn.execute(text(statement))
+
+        if (
+            inspector.has_table("access_event", schema="public")
+            and inspector.has_table("company", schema="public")
+            and inspector.has_table("tenant", schema="public")
+        ):
+            for statement in ACCESS_EVENT_CASCADE_PATCHES:
+                conn.execute(text(statement))
+
+        if (
+            inspector.has_table("access_validation_log", schema="public")
+            and inspector.has_table("access_event", schema="public")
+            and inspector.has_table("site", schema="public")
+            and inspector.has_table("tenant", schema="public")
+        ):
+            for statement in ACCESS_VALIDATION_LOG_CASCADE_PATCHES:
+                conn.execute(text(statement))
+
+        if inspector.has_table("device", schema="public"):
+            for statement in DEVICE_CHILD_CASCADE_PATCHES:
+                conn.execute(text(statement))
+
+            for statement in DEVICE_ASSIGNMENT_LOG_ACTION_PATCH:
+                conn.execute(text(statement))
+
+            if inspector.has_table("site", schema="public"):
+                for statement in DEVICE_SITE_FK_PATCH:
+                    conn.execute(text(statement))
+
+        if (
+            inspector.has_table("tenant_device_access", schema="public")
+            and inspector.has_table("tenant_site_access", schema="public")
+        ):
+            for statement in TENANT_ACCESS_UNIQUE_PATCHES:
                 conn.execute(text(statement))
 
     Base.metadata.create_all(

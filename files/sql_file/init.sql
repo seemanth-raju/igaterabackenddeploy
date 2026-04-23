@@ -808,7 +808,7 @@ CREATE TABLE public.device_assignment_log (
     reason text,
     synced_to_device boolean DEFAULT false,
     sync_error text,
-    CONSTRAINT device_assignment_log_action_check CHECK (((action)::text = ANY (ARRAY['assign'::text, 'revoke'::text, 'update'::text, 'enroll'::text, 'unenroll'::text])))
+    CONSTRAINT device_assignment_log_action_check CHECK (((action)::text = ANY (ARRAY['assign'::text, 'revoke'::text, 'update'::text, 'enroll'::text, 'unenroll'::text, 'capture'::text, 'extract_fingerprint'::text, 'enroll_site'::text])))
 );
 
 
@@ -1660,6 +1660,22 @@ ALTER TABLE ONLY public.device_user_mapping
 
 
 --
+-- Name: tenant_device_access uq_tenant_device_access; Type: CONSTRAINT; Schema: public; Owner: seemanthrajukurapati
+--
+
+ALTER TABLE ONLY public.tenant_device_access
+    ADD CONSTRAINT uq_tenant_device_access UNIQUE (tenant_id, device_id);
+
+
+--
+-- Name: tenant_site_access uq_tenant_site_access; Type: CONSTRAINT; Schema: public; Owner: seemanthrajukurapati
+--
+
+ALTER TABLE ONLY public.tenant_site_access
+    ADD CONSTRAINT uq_tenant_site_access UNIQUE (tenant_id, site_id);
+
+
+--
 -- Name: access_event uq_event_device_seq; Type: CONSTRAINT; Schema: public; Owner: seemanthrajukurapati
 --
 
@@ -1896,7 +1912,7 @@ CREATE TRIGGER trigger_schedule_updated_at BEFORE UPDATE ON public.access_time_s
 --
 
 ALTER TABLE ONLY public.access_event
-    ADD CONSTRAINT access_event_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.company(company_id) ON DELETE SET NULL;
+    ADD CONSTRAINT access_event_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.company(company_id) ON DELETE CASCADE;
 
 
 --
@@ -1904,7 +1920,7 @@ ALTER TABLE ONLY public.access_event
 --
 
 ALTER TABLE ONLY public.access_event
-    ADD CONSTRAINT access_event_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id);
+    ADD CONSTRAINT access_event_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE;
 
 
 --
@@ -1912,7 +1928,7 @@ ALTER TABLE ONLY public.access_event
 --
 
 ALTER TABLE ONLY public.access_event
-    ADD CONSTRAINT access_event_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenant(tenant_id);
+    ADD CONSTRAINT access_event_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenant(tenant_id) ON DELETE CASCADE;
 
 
 --
@@ -1936,7 +1952,7 @@ ALTER TABLE ONLY public.access_time_schedule
 --
 
 ALTER TABLE ONLY public.access_validation_log
-    ADD CONSTRAINT access_validation_log_access_event_id_fkey FOREIGN KEY (access_event_id) REFERENCES public.access_event(event_id) ON DELETE SET NULL;
+    ADD CONSTRAINT access_validation_log_access_event_id_fkey FOREIGN KEY (access_event_id) REFERENCES public.access_event(event_id) ON DELETE CASCADE;
 
 
 --
@@ -1944,7 +1960,7 @@ ALTER TABLE ONLY public.access_validation_log
 --
 
 ALTER TABLE ONLY public.access_validation_log
-    ADD CONSTRAINT access_validation_log_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE SET NULL;
+    ADD CONSTRAINT access_validation_log_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE;
 
 
 --
@@ -1952,7 +1968,7 @@ ALTER TABLE ONLY public.access_validation_log
 --
 
 ALTER TABLE ONLY public.access_validation_log
-    ADD CONSTRAINT access_validation_log_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.site(site_id) ON DELETE SET NULL;
+    ADD CONSTRAINT access_validation_log_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.site(site_id) ON DELETE CASCADE;
 
 
 --
@@ -1960,7 +1976,7 @@ ALTER TABLE ONLY public.access_validation_log
 --
 
 ALTER TABLE ONLY public.access_validation_log
-    ADD CONSTRAINT access_validation_log_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenant(tenant_id) ON DELETE SET NULL;
+    ADD CONSTRAINT access_validation_log_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenant(tenant_id) ON DELETE CASCADE;
 
 
 --
@@ -2017,6 +2033,14 @@ ALTER TABLE ONLY public.device_assignment_log
 
 ALTER TABLE ONLY public.device
     ADD CONSTRAINT device_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.company(company_id) ON DELETE CASCADE;
+
+
+--
+-- Name: device device_site_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: seemanthrajukurapati
+--
+
+ALTER TABLE ONLY public.device
+    ADD CONSTRAINT device_site_id_fkey FOREIGN KEY (site_id) REFERENCES public.site(site_id) ON DELETE SET NULL;
 
 
 --
