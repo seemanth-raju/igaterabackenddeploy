@@ -155,7 +155,7 @@ DEVICE_REFERENCE_KEY_PATCHES = (
               AND tc.table_name = 'device'
               AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
             GROUP BY tc.constraint_schema, tc.constraint_name
-            HAVING array_agg(kcu.column_name ORDER BY kcu.ordinal_position) = ARRAY['device_id']
+            HAVING array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) = ARRAY['device_id']
         ) THEN
             ALTER TABLE public.device
                 ADD CONSTRAINT device_device_id_reference_key UNIQUE (device_id);
