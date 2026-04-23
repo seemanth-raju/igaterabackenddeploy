@@ -1,0 +1,17 @@
+access_event
+access_time_schedule
+access_validation_log
+app_user
+auth_token
+company
+credential
+device
+device_command
+device_config
+device_assignment_log
+device_sync_log
+device_user_mapping
+site
+tenant
+tenant_device_access
+tenant_site_access

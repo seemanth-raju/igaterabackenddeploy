@@ -753,7 +753,6 @@ CREATE SEQUENCE public.device_command_command_id_seq
 ALTER SEQUENCE public.device_command_command_id_seq OWNED BY public.device_command.command_id;
 ALTER TABLE ONLY public.device_command ALTER COLUMN command_id SET DEFAULT nextval('public.device_command_command_id_seq'::regclass);
 ALTER TABLE ONLY public.device_command ADD CONSTRAINT device_command_pkey PRIMARY KEY (command_id);
-ALTER TABLE ONLY public.device_command ADD CONSTRAINT device_command_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE;
 CREATE INDEX idx_devcmd_device ON public.device_command USING btree (device_id);
 CREATE INDEX idx_devcmd_status ON public.device_command USING btree (status);
 CREATE INDEX idx_devcmd_device_pending ON public.device_command USING btree (device_id, status);
@@ -787,7 +786,6 @@ CREATE SEQUENCE public.device_config_config_entry_id_seq
 ALTER SEQUENCE public.device_config_config_entry_id_seq OWNED BY public.device_config.config_entry_id;
 ALTER TABLE ONLY public.device_config ALTER COLUMN config_entry_id SET DEFAULT nextval('public.device_config_config_entry_id_seq'::regclass);
 ALTER TABLE ONLY public.device_config ADD CONSTRAINT device_config_pkey PRIMARY KEY (config_entry_id);
-ALTER TABLE ONLY public.device_config ADD CONSTRAINT device_config_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE;
 CREATE INDEX idx_devcfg_device ON public.device_config USING btree (device_id);
 CREATE INDEX idx_devcfg_status ON public.device_config USING btree (status);
 CREATE INDEX idx_devcfg_device_pending ON public.device_config USING btree (device_id, status);
@@ -2019,6 +2017,22 @@ ALTER TABLE ONLY public.device_assignment_log
 
 ALTER TABLE ONLY public.device
     ADD CONSTRAINT device_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.company(company_id) ON DELETE CASCADE;
+
+
+--
+-- Name: device_command device_command_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: seemanthrajukurapati
+--
+
+ALTER TABLE ONLY public.device_command
+    ADD CONSTRAINT device_command_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE;
+
+
+--
+-- Name: device_config device_config_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: seemanthrajukurapati
+--
+
+ALTER TABLE ONLY public.device_config
+    ADD CONSTRAINT device_config_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.device(device_id) ON DELETE CASCADE;
 
 
 --

@@ -132,6 +132,39 @@ DEVICE_RUNTIME_PATCHES = (
 )
 
 
+DEVICE_REFERENCE_KEY_PATCHES = (
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'device'
+              AND column_name = 'device_id'
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON kcu.constraint_schema = tc.constraint_schema
+             AND kcu.constraint_name = tc.constraint_name
+             AND kcu.table_schema = tc.table_schema
+             AND kcu.table_name = tc.table_name
+            WHERE tc.table_schema = 'public'
+              AND tc.table_name = 'device'
+              AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+            GROUP BY tc.constraint_schema, tc.constraint_name
+            HAVING array_agg(kcu.column_name ORDER BY kcu.ordinal_position) = ARRAY['device_id']
+        ) THEN
+            ALTER TABLE public.device
+                ADD CONSTRAINT device_device_id_reference_key UNIQUE (device_id);
+        END IF;
+    END $$;
+    """,
+)
+
+
 COMPANY_QUOTA_PATCHES = (
     "ALTER TABLE public.company ADD COLUMN IF NOT EXISTS max_users integer",
     "ALTER TABLE public.company ADD COLUMN IF NOT EXISTS max_devices integer",
@@ -221,6 +254,9 @@ def _apply_runtime_schema_patches(engine: Engine) -> None:
                 conn.execute(text(statement))
 
         for statement in DEVICE_RUNTIME_PATCHES:
+            conn.execute(text(statement))
+
+        for statement in DEVICE_REFERENCE_KEY_PATCHES:
             conn.execute(text(statement))
 
         if inspector.has_table("device_command", schema="public"):

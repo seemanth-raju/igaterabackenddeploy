@@ -546,6 +546,7 @@ def test_assert_required_schema_applies_runtime_push_patches(monkeypatch):
 
     assert any("ALTER TABLE public.device ADD COLUMN IF NOT EXISTS communication_mode" in stmt for stmt in executed)
     assert any("ALTER TABLE public.device ADD COLUMN IF NOT EXISTS push_token_hash" in stmt for stmt in executed)
+    assert any("ADD CONSTRAINT device_device_id_reference_key UNIQUE (device_id)" in stmt for stmt in executed)
     assert create_all_calls
     assert "device_command" in create_all_calls[0]
     assert "device_config" in create_all_calls[0]
