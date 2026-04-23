@@ -1266,7 +1266,7 @@ COPY public.access_validation_log (validation_id, tenant_id, site_id, device_id,
 --
 
 COPY public.app_user (user_id, role, full_name, password_hash, is_active, last_login, created_at, company_id, username) FROM stdin;
-88ca0a3d-b85b-4cfa-9a4d-5f564cfd6abd	super_admin	Super Admin	$2b$12$q0RHboTWWLaG0DxR.4HoxOFQiJtEC.25TxTi0C0vHqaVb2WnQBrpy	t	2026-02-22 10:22:39.659466+05:30	2026-02-21 10:33:26.500804+05:30	41984a4d-3455-46cb-8c03-bb1decf764f7	SYSADMIN
+88ca0a3d-b85b-4cfa-9a4d-5f564cfd6abd	super_admin	Super Admin	$2b$12$iuI8xvbvTj3DDaSsHoWv3OU1zUr5GuKPCvleSauRFq3e97QqOgV7e	t	2026-02-22 10:22:39.659466+05:30	2026-02-21 10:33:26.500804+05:30	41984a4d-3455-46cb-8c03-bb1decf764f7	admin
 c9d8c5fd-1de8-4fa8-ba05-56b1a51aae17	company_admin	KURAPATI SEEMANTH RAJU	$2b$12$rToXpJiJq8CQAQEdbw4Yn.Rcv1N1Atae4hMnMhRAQEkHgJosx.Xsq	t	2026-02-22 11:02:39.768972+05:30	2026-02-21 10:55:01.8574+05:30	53ec51f7-d8f1-4f2c-9e78-13a96eaeb246	testadmin
 \.
 
