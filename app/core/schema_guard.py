@@ -425,6 +425,16 @@ def _apply_runtime_schema_patches(engine: Engine) -> None:
         checkfirst=True,
     )
 
+    # Re-check after create_all: tenant_group may have just been created,
+    # meaning TENANT_GROUP_PATCHES (which adds tenant.group_id) was skipped
+    # in the first block. Re-run them now so the column exists before the
+    # index patches below try to reference it.
+    inspector2 = inspect(engine)
+    with engine.begin() as conn:
+        if inspector2.has_table("tenant", schema="public") and inspector2.has_table("tenant_group", schema="public"):
+            for statement in TENANT_GROUP_PATCHES:
+                conn.execute(text(statement))
+
     with engine.begin() as conn:
         for statement in RUNTIME_INDEX_PATCHES:
             conn.execute(text(statement))
