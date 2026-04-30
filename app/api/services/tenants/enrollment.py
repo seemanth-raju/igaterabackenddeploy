@@ -162,6 +162,54 @@ def _upsert_mapping(
     return mapping
 
 
+def _upsert_site_access_for_device(
+    tenant_id: int,
+    device: Device,
+    db: Session,
+    valid_from: datetime | None = None,
+    valid_till: datetime | None = None,
+) -> None:
+    """Ensure a TenantSiteAccess + TenantDeviceAccess row exists for the device's site.
+
+    Called when enrolling directly to a device so the member site_accesses view stays
+    consistent with device-level enrollment.
+    """
+    if not device.site_id:
+        return
+
+    site_access = (
+        db.query(TenantSiteAccess)
+        .filter(TenantSiteAccess.tenant_id == tenant_id, TenantSiteAccess.site_id == device.site_id)
+        .first()
+    )
+    if not site_access:
+        site_access = TenantSiteAccess(
+            tenant_id=tenant_id,
+            site_id=device.site_id,
+            valid_from=valid_from,
+            valid_till=valid_till,
+        )
+        db.add(site_access)
+        db.flush()
+
+    dev_access = (
+        db.query(TenantDeviceAccess)
+        .filter(
+            TenantDeviceAccess.tenant_id == tenant_id,
+            TenantDeviceAccess.device_id == device.device_id,
+        )
+        .first()
+    )
+    if not dev_access:
+        db.add(TenantDeviceAccess(
+            tenant_id=tenant_id,
+            device_id=device.device_id,
+            site_access_id=site_access.site_access_id,
+            valid_from=valid_from,
+            valid_till=valid_till,
+        ))
+
+
 def _log_assignment(
     tenant_id: int,
     device_id: int,
@@ -217,7 +265,7 @@ def register_and_capture_fingerprint(
     Poll /api/push/operations/{correlation_id} to track completion.
     """
     tenant = _get_tenant_or_404(tenant_id, db)
-    _get_device_for_tenant_or_404(tenant, device_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
     _sync_tenant_global_validity(tenant, valid_from, valid_till)
 
     if len(tenant.full_name) > 15:
@@ -238,6 +286,7 @@ def register_and_capture_fingerprint(
     )
 
     _upsert_mapping(tenant_id, device_id, db, synced=False, valid_from=valid_from, valid_till=valid_till)
+    _upsert_site_access_for_device(tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
     _log_assignment(tenant_id, device_id, "capture", db, performed_by=performed_by)
     db.commit()
 
@@ -308,7 +357,7 @@ def enroll_to_device(
     No physical presence at the device is needed.
     """
     tenant = _get_tenant_or_404(tenant_id, db)
-    _get_device_for_tenant_or_404(tenant, device_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
     if update_tenant_validity:
         _sync_tenant_global_validity(tenant, valid_from, valid_till)
 
@@ -329,6 +378,7 @@ def enroll_to_device(
         fp_queued = True
 
     _upsert_mapping(tenant_id, device_id, db, synced=False, valid_from=valid_from, valid_till=valid_till)
+    _upsert_site_access_for_device(tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
     _log_assignment(tenant_id, device_id, "enroll", db, performed_by=performed_by)
     db.commit()
 
