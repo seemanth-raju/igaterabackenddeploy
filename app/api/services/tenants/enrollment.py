@@ -1,9 +1,12 @@
-"""Tenant device enrollment — push-only mode.
+"""Tenant device enrollment — supports push and direct communication modes.
 
-All operations queue commands/configs into DeviceCommand / DeviceConfig tables.
-The device picks them up on its next poll (/push/poll → /push/getcmd → /push/updatecmd).
+Push mode: commands are queued in DeviceCommand/DeviceConfig tables and the device
+picks them up on its next poll (/push/poll → /push/getcmd → /push/updatecmd).
 
-Enrollment flow:
+Direct mode: the server makes HTTP requests directly to the device API using its
+ip_address/api_username/api_password. Results are synchronous — no correlation_id.
+
+Enrollment flow (push):
   1. POST /tenants/{id}/capture-fingerprint
        → queues config-id=10 (create user) + cmd-id=1 (ENROLL_CREDENTIAL)
        → device prompts user for finger scan
@@ -16,8 +19,17 @@ Enrollment flow:
   3. DELETE /tenants/{id}/unenroll
        → queues cmd-id=2 (DELETE_CREDENTIAL) + cmd-id=7 (DELETE_USER)
 
-All responses return immediately with a correlation_id.
-Poll GET /api/push/operations/{correlation_id} to track status.
+Enrollment flow (direct):
+  1. POST /tenants/{id}/capture-fingerprint
+       → calls device API: create user + trigger enrollment mode
+       → user scans finger at device
+       → call POST /tenants/{id}/extract-fingerprint to pull the template
+
+  2. POST /tenants/{id}/enroll
+       → calls device API: create user + push stored fingerprint template
+
+  3. DELETE /tenants/{id}/unenroll
+       → calls device API: delete fingerprint + delete user
 """
 
 import uuid
@@ -210,6 +222,271 @@ def _upsert_site_access_for_device(
         ))
 
 
+# ---------------------------------------------------------------------------
+# Direct-mode helpers — call device API synchronously via MatrixDeviceClient
+# ---------------------------------------------------------------------------
+
+
+def _make_direct_client(device: Device):
+    from app.services.matrix.device_client import MatrixDeviceClient
+    if not device.ip_address:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Device has no IP address configured for direct mode",
+        )
+    return MatrixDeviceClient(
+        device_ip=device.ip_address,
+        username=device.api_username or "admin",
+        encrypted_password=device.api_password_encrypted or "",
+        use_https=device.use_https,
+        api_port=device.api_port,
+    )
+
+
+def _effective_valid_till_date(valid_till: datetime | None, tenant: Tenant):
+    from datetime import datetime as _dt, date as _date
+    effective = valid_till if valid_till is not None else tenant.global_access_till
+    if effective is None:
+        return None
+    if isinstance(effective, _dt):
+        return effective.date()
+    if isinstance(effective, _date):
+        return effective
+    return None
+
+
+def _direct_capture_fingerprint(
+    tenant: Tenant,
+    device: Device,
+    db: Session,
+    finger_index: int,
+    performed_by,
+    valid_from: datetime | None,
+    valid_till: datetime | None,
+) -> dict:
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+    create_result = client.create_user(
+        user_id=matrix_user_id,
+        name=tenant.full_name,
+        active=is_access_active(tenant),
+        validity_end_date=_effective_valid_till_date(valid_till, tenant),
+    )
+    if not create_result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Device rejected user creation: {create_result['response']}",
+        )
+
+    enroll_result = client.trigger_fingerprint_enrollment(matrix_user_id, finger_index)
+
+    _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=True,
+                    valid_from=valid_from, valid_till=valid_till)
+    _upsert_site_access_for_device(tenant.tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
+    _log_assignment(tenant.tenant_id, device.device_id, "capture", db, performed_by=performed_by, synced=True)
+    db.commit()
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "device_id": device.device_id,
+        "mode": "direct",
+        "status": "enrollment_triggered" if enroll_result["success"] else "user_created",
+        "enrollment_triggered": enroll_result["success"],
+        "message": (
+            "User created and fingerprint enrollment mode triggered. "
+            "Have the user scan their finger at the device, then call "
+            "POST /tenants/{tenant_id}/extract-fingerprint to store the template."
+            if enroll_result["success"]
+            else "User created on device but failed to trigger enrollment mode. Try again."
+        ),
+    }
+
+
+def _direct_enroll(
+    tenant: Tenant,
+    device: Device,
+    db: Session,
+    finger_index: int,
+    performed_by,
+    valid_from: datetime | None,
+    valid_till: datetime | None,
+) -> dict:
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+    create_result = client.create_user(
+        user_id=matrix_user_id,
+        name=tenant.full_name,
+        active=is_access_active(tenant),
+        validity_end_date=_effective_valid_till_date(valid_till, tenant),
+    )
+    if not create_result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Device rejected user creation: {create_result['response']}",
+        )
+
+    credential = _find_fingerprint_credential(tenant.tenant_id, db, finger_index)
+    fp_pushed = False
+    if credential and credential.file_path:
+        fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, finger_index)
+        fp_pushed = fp_result["success"]
+
+    _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=True,
+                    valid_from=valid_from, valid_till=valid_till)
+    _upsert_site_access_for_device(tenant.tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
+    _log_assignment(tenant.tenant_id, device.device_id, "enroll", db, performed_by=performed_by, synced=True)
+    db.commit()
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "device_id": device.device_id,
+        "mode": "direct",
+        "status": "success",
+        "fingerprint_pushed": fp_pushed,
+        "message": (
+            "User created and fingerprint pushed to device."
+            if fp_pushed
+            else "User created on device but no fingerprint stored — capture one first via capture-fingerprint."
+        ),
+    }
+
+
+def _direct_extract_fingerprint(
+    tenant: Tenant,
+    device: Device,
+    db: Session,
+    finger_index: int,
+    performed_by,
+) -> dict:
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+    content, file_path = client.extract_fingerprint(matrix_user_id, finger_index)
+    if not content or not file_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No fingerprint found on device. Has the user scanned their finger yet?",
+        )
+
+    cred = (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant.tenant_id,
+            Credential.type == "finger",
+            Credential.slot_index == finger_index,
+        )
+        .first()
+    )
+    if cred:
+        cred.file_path = file_path
+    else:
+        db.add(Credential(
+            tenant_id=tenant.tenant_id,
+            type="finger",
+            slot_index=finger_index,
+            file_path=file_path,
+        ))
+
+    _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=True)
+    _log_assignment(tenant.tenant_id, device.device_id, "extract_fingerprint", db,
+                    performed_by=performed_by, synced=True)
+    db.commit()
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "device_id": device.device_id,
+        "mode": "direct",
+        "status": "success",
+        "finger_index": finger_index,
+        "message": "Fingerprint template extracted from device and stored.",
+    }
+
+
+def _direct_unenroll(
+    tenant: Tenant,
+    device: Device,
+    db: Session,
+    performed_by,
+) -> dict:
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+    client.delete_fingerprint(matrix_user_id)
+    delete_result = client.delete_user(matrix_user_id)
+
+    mapping = (
+        db.query(DeviceUserMapping)
+        .filter(
+            DeviceUserMapping.tenant_id == tenant.tenant_id,
+            DeviceUserMapping.device_id == device.device_id,
+        )
+        .first()
+    )
+    if mapping:
+        db.delete(mapping)
+
+    _log_assignment(tenant.tenant_id, device.device_id, "unenroll", db, performed_by=performed_by)
+    db.commit()
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "device_id": device.device_id,
+        "mode": "direct",
+        "status": "success" if delete_result["success"] else "partial",
+        "message": (
+            "User removed from device."
+            if delete_result["success"]
+            else f"Fingerprint deleted but user removal returned: {delete_result['response']}"
+        ),
+    }
+
+
+def _direct_update(
+    tenant: Tenant,
+    device: Device,
+    db: Session,
+    performed_by,
+    valid_from: datetime | None,
+    valid_till: datetime | None,
+) -> dict:
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+    create_result = client.create_user(
+        user_id=matrix_user_id,
+        name=tenant.full_name,
+        active=is_access_active(tenant),
+        validity_end_date=_effective_valid_till_date(valid_till, tenant),
+    )
+
+    credential = _find_fingerprint_credential(tenant.tenant_id, db)
+    fp_pushed = False
+    if credential and credential.file_path:
+        fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, 1)
+        fp_pushed = fp_result["success"]
+
+    _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=create_result["success"],
+                    valid_from=valid_from, valid_till=valid_till)
+    _log_assignment(tenant.tenant_id, device.device_id, "update", db,
+                    performed_by=performed_by, synced=create_result["success"])
+    db.commit()
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "device_id": device.device_id,
+        "mode": "direct",
+        "status": "success" if create_result["success"] else "failed",
+        "fingerprint_pushed": fp_pushed,
+        "message": (
+            "User synced to device."
+            if create_result["success"]
+            else f"Device returned: {create_result['response']}"
+        ),
+    }
+
+
 def _log_assignment(
     tenant_id: int,
     device_id: int,
@@ -241,7 +518,7 @@ def _sync_tenant_global_validity(
 
 
 # ---------------------------------------------------------------------------
-# Public API — all push-only, all return correlation_id immediately
+# Public API — branches on communication_mode: push queues commands, direct calls device
 # ---------------------------------------------------------------------------
 
 
@@ -274,6 +551,11 @@ def register_and_capture_fingerprint(
             detail=f"Name '{tenant.full_name}' exceeds 15-character device limit.",
         )
 
+    if device.communication_mode == "direct":
+        return _direct_capture_fingerprint(
+            tenant, device, db, finger_index, performed_by, valid_from, valid_till
+        )
+
     correlation_id = _make_correlation_id(tenant_id, device_id)
 
     # Step 1: create/update user on device (config-id=10)
@@ -293,6 +575,7 @@ def register_and_capture_fingerprint(
     return {
         "tenant_id": tenant_id,
         "device_id": device_id,
+        "mode": "push",
         "status": "queued",
         "correlation_id": correlation_id,
         "message": (
@@ -319,8 +602,11 @@ def extract_fingerprint_from_device(
     Queues cmd-id=3 (GET_CREDENTIAL).
     """
     tenant = _get_tenant_or_404(tenant_id, db)
-    _get_device_for_tenant_or_404(tenant, device_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
     _sync_tenant_global_validity(tenant, valid_from, valid_till)
+
+    if device.communication_mode == "direct":
+        return _direct_extract_fingerprint(tenant, device, db, finger_index, performed_by)
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
     push_get_credential(db, device_id, tenant_id, finger_index, correlation_id)
@@ -331,6 +617,7 @@ def extract_fingerprint_from_device(
     return {
         "tenant_id": tenant_id,
         "device_id": device_id,
+        "mode": "push",
         "status": "queued",
         "correlation_id": correlation_id,
         "message": "GET_CREDENTIAL queued. Poll GET /api/push/operations/{correlation_id} for status.",
@@ -367,6 +654,9 @@ def enroll_to_device(
             detail=f"Name '{tenant.full_name}' exceeds 15-character device limit.",
         )
 
+    if device.communication_mode == "direct":
+        return _direct_enroll(tenant, device, db, finger_index, performed_by, valid_from, valid_till)
+
     correlation_id = _make_correlation_id(tenant_id, device_id)
 
     push_create_user(db, device_id, tenant, correlation_id, active=is_access_active(tenant), valid_till=valid_till)
@@ -393,6 +683,7 @@ def enroll_to_device(
     return {
         "tenant_id": tenant_id,
         "device_id": device_id,
+        "mode": "push",
         "status": "queued",
         "correlation_id": correlation_id,
         "fingerprint_queued": fp_queued,
@@ -469,7 +760,7 @@ def update_tenant_on_device(
     Per-device validity is preserved unless explicitly overridden.
     """
     tenant = _get_tenant_or_404(tenant_id, db)
-    _get_device_for_tenant_or_404(tenant, device_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
 
     # Preserve existing per-device validity unless caller overrides
     existing_mapping = (
@@ -483,6 +774,11 @@ def update_tenant_on_device(
     effective_valid_from = valid_from if valid_from is not None else (
         existing_mapping.valid_from if existing_mapping else None
     )
+
+    if device.communication_mode == "direct":
+        return _direct_update(
+            tenant, device, db, performed_by, effective_valid_from, effective_valid_till
+        )
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
 
@@ -503,6 +799,7 @@ def update_tenant_on_device(
     return {
         "tenant_id": tenant_id,
         "device_id": device_id,
+        "mode": "push",
         "status": "queued",
         "correlation_id": correlation_id,
         "fingerprint_queued": fp_queued,
@@ -561,7 +858,10 @@ def unenroll_from_device(
     Callback removes the DeviceUserMapping after DELETE_USER succeeds.
     """
     tenant = _get_tenant_or_404(tenant_id, db)
-    _get_device_for_tenant_or_404(tenant, device_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
+
+    if device.communication_mode == "direct":
+        return _direct_unenroll(tenant, device, db, performed_by)
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
     push_delete_credential(db, device_id, tenant_id, cred_type="1", correlation_id=correlation_id)
@@ -572,6 +872,7 @@ def unenroll_from_device(
     return {
         "tenant_id": tenant_id,
         "device_id": device_id,
+        "mode": "push",
         "status": "queued",
         "correlation_id": correlation_id,
         "message": "Unenrollment commands queued. Poll GET /api/push/operations/{correlation_id} for status.",

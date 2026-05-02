@@ -777,12 +777,17 @@ async def device_update_config(
     cfg = query.first()
 
     if cfg:
+        result_data = {k: v for k, v in params.items() if k not in ("device-type", "serial-no", "status", "config-id", "password")}
         cfg.status = "success" if cfg_status == "1" else "failed"
         cfg.completed_at = datetime.now(timezone.utc)
         if cfg_status != "1":
-            cfg.error_message = f"Device reported config failure. config-id={config_id_str}"
-        _log.info("Push updateconfig: device=%d config_entry_id=%d status=%s",
-                  device.device_id, cfg.config_entry_id, cfg.status)
+            cfg.error_message = f"Device reported config failure. config-id={config_id_str} result={result_data}"
+            _log.warning("Push updateconfig FAILED: device=%d config_entry_id=%d config_id=%s device_response=%s sent_params=%s",
+                         device.device_id, cfg.config_entry_id, config_id_str,
+                         _redact_params(result_data), _redact_params(cfg.params or {}))
+        else:
+            _log.info("Push updateconfig: device=%d config_entry_id=%d config_id=%s status=success",
+                      device.device_id, cfg.config_entry_id, config_id_str)
 
         # Post-process completed config (callbacks)
         try:
