@@ -80,6 +80,82 @@ def _find_mapping_by_user_id(device_id: int, matrix_user_id: str, db: Session) -
 # ---------------------------------------------------------------------------
 
 
+def _save_face_from_b64(
+    template_b64: str,
+    user_id: str,
+    face_no: int,
+    device: Device,
+    db: Session,
+    source: str = "unknown",
+) -> bool:
+    """Save a base64-encoded face template to file + DB."""
+    if not template_b64:
+        return False
+
+    mapping = _find_mapping_by_user_id(device.device_id, user_id, db)
+    if not mapping:
+        log.warning("%s: no mapping for user %s on device %d", source, user_id, device.device_id)
+        return False
+
+    tenant_id = mapping.tenant_id
+
+    try:
+        cleaned = template_b64.replace(" ", "+").strip()
+        missing = (4 - len(cleaned) % 4) % 4
+        if missing:
+            cleaned += "=" * missing
+        template_bytes = base64.b64decode(cleaned)
+    except Exception:
+        log.exception("%s: failed to decode base64 for user %s", source, user_id)
+        return False
+
+    if len(template_bytes) < 10:
+        log.warning("%s: face template too small (%d bytes) for user %s", source, len(template_bytes), user_id)
+        return False
+
+    storage_dir = settings.fingerprint_storage_path
+    os.makedirs(storage_dir, exist_ok=True)
+    file_name = f"tenant_{tenant_id}_face_{face_no}.dat"
+    file_path = os.path.join(storage_dir, file_name)
+
+    with open(file_path, "wb") as f:
+        f.write(template_bytes)
+
+    file_hash = hashlib.sha256(template_bytes).hexdigest()
+
+    existing = (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant_id,
+            Credential.type == "face",
+            Credential.slot_index == face_no,
+        )
+        .first()
+    )
+    if existing:
+        existing.file_path = file_path
+        existing.file_hash = file_hash
+        log.info("%s: updated face credential for tenant %d face-no %d (%d bytes)",
+                 source, tenant_id, face_no, len(template_bytes))
+    else:
+        db.add(Credential(
+            tenant_id=tenant_id,
+            type="face",
+            slot_index=face_no,
+            file_path=file_path,
+            file_hash=file_hash,
+        ))
+        log.info("%s: created face credential for tenant %d face-no %d (%d bytes)",
+                 source, tenant_id, face_no, len(template_bytes))
+
+    mapping.is_synced = True
+    mapping.last_sync_at = datetime.now(timezone.utc)
+    existing_resp = mapping.device_response or {}
+    mapping.device_response = {**existing_resp, "face_pushed": True}
+    db.flush()
+    return True
+
+
 def _save_fingerprint_from_b64(
     template_b64: str,
     user_id: str,
@@ -173,63 +249,104 @@ def _save_fingerprint_from_b64(
 
 
 def _on_enroll_credential_done(cmd: DeviceCommand, device: Device, db: Session) -> None:
-    """cmd_id=1 (ENROLL_CREDENTIAL) succeeded — finger was scanned on device.
+    """cmd_id=1 (ENROLL_CREDENTIAL) succeeded — biometric scan completed on device.
 
-    Some device types (e.g. Path V2) return the fingerprint template directly
-    in the ENROLL response as data-1. If present, save it immediately.
-    Otherwise, queue GET_CREDENTIAL to download it separately.
+    cred-type=3 → fingerprint, cred-type=6 → face.
+    Some devices return the template inline as data-1; otherwise queue GET_CREDENTIAL.
+
+    NOTE: ENROLL and GET/SET/DELETE use different cred-type numbering:
+      ENROLL: cred-type 3=Finger, 6=Face
+      GET/SET/DELETE: cred-type 2=Finger, 4=Face
     """
     params = cmd.params or {}
     result = cmd.result or {}
     user_id = params.get("user-id", "")
-    finger_no = params.get("finger-no", "1")
+    cred_type = params.get("cred-type", "3")
 
-    # Check if the device already returned the template inline
-    template_b64 = result.get("data-1", "")
-    if template_b64:
-        log.info("ENROLL_CREDENTIAL for user %s on device %d returned data-1 inline — saving directly",
+    is_face = cred_type == "6"
+
+    if is_face:
+        face_no = params.get("face-no", "1")
+        template_b64 = result.get("data-1", "")
+        if template_b64:
+            log.info("ENROLL_CREDENTIAL (face) for user %s on device %d returned data-1 inline",
+                     user_id, device.device_id)
+            saved = _save_face_from_b64(
+                template_b64, user_id, int(face_no), device, db, source="ENROLL_CREDENTIAL(face)",
+            )
+            if saved:
+                return
+
+        log.info("ENROLL_CREDENTIAL (face) done for user %s on device %d — queuing GET_CREDENTIAL",
                  user_id, device.device_id)
-        saved = _save_fingerprint_from_b64(
-            template_b64, user_id, int(finger_no), device, db, source="ENROLL_CREDENTIAL",
+        from app.api.services.push.commands import CMD, queue_command
+        queue_command(
+            db=db,
+            device_id=device.device_id,
+            cmd_id=CMD.GET_CREDENTIAL,
+            params={
+                "cred-type": "4",  # GET/SET/DELETE: 4=Face
+                "user-id": user_id,
+                "face-no": face_no,
+            },
+            correlation_id=cmd.correlation_id,
         )
-        if saved:
-            return  # Done — no need to queue GET_CREDENTIAL
+    else:
+        # Finger (cred-type=3 for ENROLL)
+        finger_no = params.get("finger-no", "1")
+        template_b64 = result.get("data-1", "")
+        if template_b64:
+            log.info("ENROLL_CREDENTIAL (finger) for user %s on device %d returned data-1 inline",
+                     user_id, device.device_id)
+            saved = _save_fingerprint_from_b64(
+                template_b64, user_id, int(finger_no), device, db, source="ENROLL_CREDENTIAL",
+            )
+            if saved:
+                return
 
-    # Template not in response — queue GET_CREDENTIAL to fetch it
-    # NOTE: cred-type for GET/SET/DELETE uses different numbering than ENROLL:
-    #   ENROLL: 1=Read Only Card, 2=Smart Card, 3=Finger, 4=Palm, 6=Face
-    #   GET/SET/DELETE: 1=Card, 2=Finger, 3=Palm, 4=Face
-    # So always hardcode "2" for Finger in GET_CREDENTIAL, never pass through ENROLL's cred-type.
-    log.info("ENROLL_CREDENTIAL done for user %s on device %d — queuing GET_CREDENTIAL",
-             user_id, device.device_id)
-
-    from app.api.services.push.commands import CMD, queue_command
-    queue_command(
-        db=db,
-        device_id=device.device_id,
-        cmd_id=CMD.GET_CREDENTIAL,
-        params={
-            "cred-type": "2",  # GET: 1=Card, 2=Finger, 3=Palm, 4=Face
-            "user-id": user_id,
-            "finger-no": finger_no,
-        },
-        correlation_id=cmd.correlation_id,
-    )
+        log.info("ENROLL_CREDENTIAL (finger) done for user %s on device %d — queuing GET_CREDENTIAL",
+                 user_id, device.device_id)
+        from app.api.services.push.commands import CMD, queue_command
+        queue_command(
+            db=db,
+            device_id=device.device_id,
+            cmd_id=CMD.GET_CREDENTIAL,
+            params={
+                "cred-type": "2",  # GET/SET/DELETE: 2=Finger
+                "user-id": user_id,
+                "finger-no": finger_no,
+            },
+            correlation_id=cmd.correlation_id,
+        )
 
 
 def _on_get_credential_done(cmd: DeviceCommand, device: Device, db: Session) -> None:
-    """cmd_id=3 (GET_CREDENTIAL) succeeded — device returned fingerprint template."""
+    """cmd_id=3 (GET_CREDENTIAL) succeeded — device returned biometric template.
+
+    cred-type=2 → fingerprint, cred-type=4 → face.
+    """
     params = cmd.params or {}
     result = cmd.result or {}
     user_id = params.get("user-id", "")
-    finger_no = int(params.get("finger-no", "1"))
-
+    cred_type = params.get("cred-type", "2")
     template_b64 = result.get("data-1", "")
-    saved = _save_fingerprint_from_b64(
-        template_b64, user_id, finger_no, device, db, source="GET_CREDENTIAL",
-    )
-    if not saved:
-        log.warning("GET_CREDENTIAL for user %s on device %d: no template saved", user_id, device.device_id)
+
+    if cred_type == "4":
+        face_no = int(params.get("face-no", "1"))
+        saved = _save_face_from_b64(
+            template_b64, user_id, face_no, device, db, source="GET_CREDENTIAL(face)",
+        )
+        if not saved:
+            log.warning("GET_CREDENTIAL (face) for user %s on device %d: no template saved",
+                        user_id, device.device_id)
+    else:
+        finger_no = int(params.get("finger-no", "1"))
+        saved = _save_fingerprint_from_b64(
+            template_b64, user_id, finger_no, device, db, source="GET_CREDENTIAL",
+        )
+        if not saved:
+            log.warning("GET_CREDENTIAL (finger) for user %s on device %d: no template saved",
+                        user_id, device.device_id)
 
 
 def _on_set_credential_done(cmd: DeviceCommand, device: Device, db: Session) -> None:
@@ -362,24 +479,43 @@ def _on_user_config_done(cfg: DeviceConfig, device: Device, db: Session) -> None
     db.flush()
 
     # If this config was queued as part of a capture-fingerprint flow, now queue ENROLL.
-    # The finger index is stored as a private param (_enroll_finger_index) that was
-    # stripped before sending to the device but preserved in the DB record.
-    finger_index_str = (cfg.params or {}).get("_enroll_finger_index")
+    # Private params (_enroll_finger_index, _enroll_face_no) are stripped before sending
+    # to the device but preserved in the DB record.
+    cfg_params = cfg.params or {}
+    finger_index_str = cfg_params.get("_enroll_finger_index")
+    face_no_str = cfg_params.get("_enroll_face_no")
+
+    from app.api.services.push.commands import CMD, queue_command
+
     if finger_index_str and finger_index_str.isdigit():
-        from app.api.services.push.commands import CMD, queue_command
         queue_command(
             db=db,
             device_id=device.device_id,
             cmd_id=CMD.ENROLL_CREDENTIAL,
             params={
-                "cred-type": "3",
+                "cred-type": "3",  # ENROLL: 3=Finger
                 "user-id": user_id,
                 "finger-no": finger_index_str,
             },
             correlation_id=cfg.correlation_id,
         )
-        log.info("User config done — queued ENROLL_CREDENTIAL for user %s finger %s on device %d",
+        log.info("User config done — queued ENROLL_CREDENTIAL (finger) for user %s finger %s on device %d",
                  user_id, finger_index_str, device.device_id)
+
+    if face_no_str and face_no_str.isdigit():
+        queue_command(
+            db=db,
+            device_id=device.device_id,
+            cmd_id=CMD.ENROLL_CREDENTIAL,
+            params={
+                "cred-type": "6",  # ENROLL: 6=Face
+                "user-id": user_id,
+                "face-no": face_no_str,
+            },
+            correlation_id=cfg.correlation_id,
+        )
+        log.info("User config done — queued ENROLL_CREDENTIAL (face) for user %s face-no %s on device %d",
+                 user_id, face_no_str, device.device_id)
 
 
 def _on_generic_config_done(cfg: DeviceConfig, device: Device, _db: Session) -> None:

@@ -47,8 +47,11 @@ from app.api.services.push.commands import (
     push_create_user,
     push_delete_credential,
     push_delete_user,
+    push_enroll_face,
     push_get_credential,
+    push_get_face,
     push_set_credential,
+    push_set_face,
     resolve_matrix_user_id,
 )
 from database.models import (
@@ -124,6 +127,86 @@ def _find_fingerprint_credential(tenant_id: int, db: Session, finger_index: int 
         )
         .order_by(Credential.created_at.desc())
         .first()
+    )
+
+
+def _find_card_credential(tenant_id: int, db: Session, slot_index: int = 1) -> Credential | None:
+    return (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant_id,
+            Credential.type == "card",
+            Credential.slot_index == slot_index,
+        )
+        .first()
+    )
+
+
+def _find_pin_credential(tenant_id: int, db: Session) -> Credential | None:
+    return (
+        db.query(Credential)
+        .filter(Credential.tenant_id == tenant_id, Credential.type == "pin")
+        .first()
+    )
+
+
+def _find_face_credential(tenant_id: int, db: Session, face_no: int = 1) -> Credential | None:
+    return (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant_id,
+            Credential.type == "face",
+            Credential.slot_index == face_no,
+        )
+        .order_by(Credential.created_at.desc())
+        .first()
+    )
+
+
+def _upsert_credential(
+    tenant_id: int,
+    db: Session,
+    ctype: str,
+    slot_index: int = 1,
+    raw_value: str | None = None,
+    file_path: str | None = None,
+) -> Credential:
+    cred = (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant_id,
+            Credential.type == ctype,
+            Credential.slot_index == slot_index,
+        )
+        .first()
+    )
+    if cred:
+        if raw_value is not None:
+            cred.raw_value = raw_value
+        if file_path is not None:
+            cred.file_path = file_path
+    else:
+        cred = Credential(
+            tenant_id=tenant_id,
+            type=ctype,
+            slot_index=slot_index,
+            raw_value=raw_value,
+            file_path=file_path,
+        )
+        db.add(cred)
+    db.flush()
+    return cred
+
+
+def _get_stored_card_pin(tenant_id: int, db: Session) -> tuple[str | None, str | None, str | None]:
+    """Return (card1, card2, user_pin) raw values for a tenant from stored credentials."""
+    c1 = _find_card_credential(tenant_id, db, slot_index=1)
+    c2 = _find_card_credential(tenant_id, db, slot_index=2)
+    pin = _find_pin_credential(tenant_id, db)
+    return (
+        c1.raw_value if c1 else None,
+        c2.raw_value if c2 else None,
+        pin.raw_value if pin else None,
     )
 
 
@@ -314,12 +397,16 @@ def _direct_enroll(
 ) -> dict:
     client = _make_direct_client(device)
     matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+    card1, card2, user_pin = _get_stored_card_pin(tenant.tenant_id, db)
 
     create_result = client.create_user(
         user_id=matrix_user_id,
         name=tenant.full_name,
         active=is_access_active(tenant),
         validity_end_date=_effective_valid_till_date(valid_till, tenant),
+        card1=card1,
+        card2=card2,
+        user_pin=user_pin,
     )
     if not create_result["success"]:
         raise HTTPException(
@@ -327,11 +414,17 @@ def _direct_enroll(
             detail=f"Device rejected user creation: {create_result['response']}",
         )
 
-    credential = _find_fingerprint_credential(tenant.tenant_id, db, finger_index)
     fp_pushed = False
+    credential = _find_fingerprint_credential(tenant.tenant_id, db, finger_index)
     if credential and credential.file_path:
         fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, finger_index)
         fp_pushed = fp_result["success"]
+
+    face_pushed = False
+    face_cred = _find_face_credential(tenant.tenant_id, db, face_no=1)
+    if face_cred and face_cred.file_path:
+        face_result = client.import_face_template(matrix_user_id, face_cred.file_path, 1)
+        face_pushed = face_result["success"]
 
     _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=True,
                     valid_from=valid_from, valid_till=valid_till)
@@ -345,11 +438,8 @@ def _direct_enroll(
         "mode": "direct",
         "status": "success",
         "fingerprint_pushed": fp_pushed,
-        "message": (
-            "User created and fingerprint pushed to device."
-            if fp_pushed
-            else "User created on device but no fingerprint stored — capture one first via capture-fingerprint."
-        ),
+        "face_pushed": face_pushed,
+        "message": "User created and credentials pushed to device.",
     }
 
 
@@ -453,19 +543,29 @@ def _direct_update(
 ) -> dict:
     client = _make_direct_client(device)
     matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+    card1, card2, user_pin = _get_stored_card_pin(tenant.tenant_id, db)
 
     create_result = client.create_user(
         user_id=matrix_user_id,
         name=tenant.full_name,
         active=is_access_active(tenant),
         validity_end_date=_effective_valid_till_date(valid_till, tenant),
+        card1=card1,
+        card2=card2,
+        user_pin=user_pin,
     )
 
-    credential = _find_fingerprint_credential(tenant.tenant_id, db)
     fp_pushed = False
+    credential = _find_fingerprint_credential(tenant.tenant_id, db)
     if credential and credential.file_path:
         fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, 1)
         fp_pushed = fp_result["success"]
+
+    face_pushed = False
+    face_cred = _find_face_credential(tenant.tenant_id, db, face_no=1)
+    if face_cred and face_cred.file_path:
+        face_result = client.import_face_template(matrix_user_id, face_cred.file_path, 1)
+        face_pushed = face_result["success"]
 
     _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=create_result["success"],
                     valid_from=valid_from, valid_till=valid_till)
@@ -479,6 +579,7 @@ def _direct_update(
         "mode": "direct",
         "status": "success" if create_result["success"] else "failed",
         "fingerprint_pushed": fp_pushed,
+        "face_pushed": face_pushed,
         "message": (
             "User synced to device."
             if create_result["success"]
@@ -658,28 +759,41 @@ def enroll_to_device(
         return _direct_enroll(tenant, device, db, finger_index, performed_by, valid_from, valid_till)
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
+    card1, card2, user_pin = _get_stored_card_pin(tenant_id, db)
 
-    push_create_user(db, device_id, tenant, correlation_id, active=is_access_active(tenant), valid_till=valid_till)
+    push_create_user(
+        db, device_id, tenant, correlation_id,
+        active=is_access_active(tenant), valid_till=valid_till,
+        card1=card1, card2=card2, user_pin=user_pin,
+    )
 
-    credential = _find_fingerprint_credential(tenant_id, db, finger_index)
     fp_queued = False
+    credential = _find_fingerprint_credential(tenant_id, db, finger_index)
     if credential and credential.file_path:
         push_set_credential(db, device_id, tenant_id, finger_index, credential.file_path, correlation_id)
         fp_queued = True
+
+    face_queued = False
+    face_cred = _find_face_credential(tenant_id, db, face_no=1)
+    if face_cred and face_cred.file_path:
+        push_set_face(db, device_id, tenant_id, 1, face_cred.file_path, correlation_id)
+        face_queued = True
 
     _upsert_mapping(tenant_id, device_id, db, synced=False, valid_from=valid_from, valid_till=valid_till)
     _upsert_site_access_for_device(tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
     _log_assignment(tenant_id, device_id, "enroll", db, performed_by=performed_by)
     db.commit()
 
-    msg = (
-        "User creation + fingerprint push queued. Poll GET /api/push/operations/{correlation_id} for status."
-        if fp_queued
-        else (
-            "User creation queued but NO fingerprint was pushed — none stored in DB. "
-            "Capture a fingerprint first via POST /tenants/{tenant_id}/capture-fingerprint."
-        )
-    )
+    parts = []
+    if fp_queued:
+        parts.append("fingerprint")
+    if face_queued:
+        parts.append("face")
+    if card1:
+        parts.append("card")
+    if user_pin:
+        parts.append("PIN")
+    cred_summary = (", ".join(parts) + " queued") if parts else "no biometric stored — capture one first"
     return {
         "tenant_id": tenant_id,
         "device_id": device_id,
@@ -687,7 +801,8 @@ def enroll_to_device(
         "status": "queued",
         "correlation_id": correlation_id,
         "fingerprint_queued": fp_queued,
-        "message": msg,
+        "face_queued": face_queued,
+        "message": f"User creation + {cred_summary}. Poll GET /api/push/operations/{{correlation_id}} for status.",
     }
 
 
@@ -781,15 +896,25 @@ def update_tenant_on_device(
         )
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
+    card1, card2, user_pin = _get_stored_card_pin(tenant_id, db)
 
-    push_create_user(db, device_id, tenant, correlation_id,
-                     active=is_access_active(tenant), valid_till=effective_valid_till)
+    push_create_user(
+        db, device_id, tenant, correlation_id,
+        active=is_access_active(tenant), valid_till=effective_valid_till,
+        card1=card1, card2=card2, user_pin=user_pin,
+    )
 
-    credential = _find_fingerprint_credential(tenant_id, db)
     fp_queued = False
+    credential = _find_fingerprint_credential(tenant_id, db)
     if credential and credential.file_path:
         push_set_credential(db, device_id, tenant_id, 1, credential.file_path, correlation_id)
         fp_queued = True
+
+    face_queued = False
+    face_cred = _find_face_credential(tenant_id, db, face_no=1)
+    if face_cred and face_cred.file_path:
+        push_set_face(db, device_id, tenant_id, 1, face_cred.file_path, correlation_id)
+        face_queued = True
 
     _upsert_mapping(tenant_id, device_id, db, synced=False,
                     valid_from=effective_valid_from, valid_till=effective_valid_till)
@@ -803,6 +928,7 @@ def update_tenant_on_device(
         "status": "queued",
         "correlation_id": correlation_id,
         "fingerprint_queued": fp_queued,
+        "face_queued": face_queued,
         "message": "Sync commands queued. Poll GET /api/push/operations/{correlation_id} for status.",
     }
 
@@ -1085,6 +1211,270 @@ def update_device_access_validity(
         valid_from=valid_from,
         valid_till=valid_till,
     )
+
+
+def set_card_credential(
+    tenant_id: int,
+    device_id: int,
+    card1: str,
+    db: Session,
+    card2: str | None = None,
+    performed_by=None,
+    valid_from: datetime | None = None,
+    valid_till: datetime | None = None,
+) -> dict:
+    """Store card credential and push to device via config-id=10.
+
+    Works for standard RFID card devices and QR devices (QR encodes the card number).
+    If a second card number is provided it is stored as card-2.
+    """
+    tenant = _get_tenant_or_404(tenant_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
+    _sync_tenant_global_validity(tenant, valid_from, valid_till)
+
+    _upsert_credential(tenant_id, db, "card", slot_index=1, raw_value=card1)
+    if card2:
+        _upsert_credential(tenant_id, db, "card", slot_index=2, raw_value=card2)
+
+    correlation_id = _make_correlation_id(tenant_id, device_id)
+
+    if device.communication_mode == "direct":
+        client = _make_direct_client(device)
+        matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+        result = client.create_user(
+            user_id=matrix_user_id,
+            name=tenant.full_name,
+            active=is_access_active(tenant),
+            validity_end_date=_effective_valid_till_date(valid_till, tenant),
+            card1=card1,
+            card2=card2,
+        )
+        _log_assignment(tenant_id, device_id, "set_card", db, performed_by=performed_by)
+        db.commit()
+        return {
+            "tenant_id": tenant_id,
+            "device_id": device_id,
+            "mode": "direct",
+            "status": "success" if result["success"] else "failed",
+            "message": "Card credential set on device." if result["success"] else f"Device returned: {result['response']}",
+        }
+
+    push_create_user(
+        db, device_id, tenant, correlation_id,
+        active=is_access_active(tenant),
+        valid_till=valid_till,
+        card1=card1, card2=card2,
+    )
+    _log_assignment(tenant_id, device_id, "set_card", db, performed_by=performed_by)
+    db.commit()
+    return {
+        "tenant_id": tenant_id,
+        "device_id": device_id,
+        "mode": "push",
+        "status": "queued",
+        "correlation_id": correlation_id,
+        "message": "Card credential queued for device update. Poll GET /api/push/operations/{correlation_id} for status.",
+    }
+
+
+def set_pin_credential(
+    tenant_id: int,
+    device_id: int,
+    pin: str,
+    db: Session,
+    performed_by=None,
+    valid_from: datetime | None = None,
+    valid_till: datetime | None = None,
+) -> dict:
+    """Store PIN credential and push to device via config-id=10."""
+    tenant = _get_tenant_or_404(tenant_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
+    _sync_tenant_global_validity(tenant, valid_from, valid_till)
+
+    _upsert_credential(tenant_id, db, "pin", slot_index=1, raw_value=pin)
+
+    correlation_id = _make_correlation_id(tenant_id, device_id)
+
+    if device.communication_mode == "direct":
+        client = _make_direct_client(device)
+        matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+        result = client.create_user(
+            user_id=matrix_user_id,
+            name=tenant.full_name,
+            active=is_access_active(tenant),
+            validity_end_date=_effective_valid_till_date(valid_till, tenant),
+            user_pin=pin,
+        )
+        _log_assignment(tenant_id, device_id, "set_pin", db, performed_by=performed_by)
+        db.commit()
+        return {
+            "tenant_id": tenant_id,
+            "device_id": device_id,
+            "mode": "direct",
+            "status": "success" if result["success"] else "failed",
+            "message": "PIN set on device." if result["success"] else f"Device returned: {result['response']}",
+        }
+
+    push_create_user(
+        db, device_id, tenant, correlation_id,
+        active=is_access_active(tenant),
+        valid_till=valid_till,
+        user_pin=pin,
+    )
+    _log_assignment(tenant_id, device_id, "set_pin", db, performed_by=performed_by)
+    db.commit()
+    return {
+        "tenant_id": tenant_id,
+        "device_id": device_id,
+        "mode": "push",
+        "status": "queued",
+        "correlation_id": correlation_id,
+        "message": "PIN queued for device update. Poll GET /api/push/operations/{correlation_id} for status.",
+    }
+
+
+def register_and_capture_face(
+    tenant_id: int,
+    device_id: int,
+    db: Session,
+    face_no: int = 1,
+    performed_by=None,
+    valid_from: datetime | None = None,
+    valid_till: datetime | None = None,
+) -> dict:
+    """Create user on device and trigger face enrollment mode.
+
+    Push mode: queues config-id=10 (create user) + cmd-id=1/cred-type=6 (ENROLL face).
+    Direct mode: calls device API to create user + trigger face scan mode.
+
+    After the user looks at the device, call the extract-face endpoint (direct mode)
+    or poll the correlation_id (push mode).
+    """
+    tenant = _get_tenant_or_404(tenant_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
+    _sync_tenant_global_validity(tenant, valid_from, valid_till)
+
+    if len(tenant.full_name) > 15:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Name '{tenant.full_name}' exceeds 15-character device limit.",
+        )
+
+    if device.communication_mode == "direct":
+        client = _make_direct_client(device)
+        matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+        create_result = client.create_user(
+            user_id=matrix_user_id,
+            name=tenant.full_name,
+            active=is_access_active(tenant),
+            validity_end_date=_effective_valid_till_date(valid_till, tenant),
+        )
+        if not create_result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Device rejected user creation: {create_result['response']}",
+            )
+
+        enroll_result = client.trigger_face_enrollment(matrix_user_id, face_no)
+        _upsert_mapping(tenant_id, device_id, db, synced=True, valid_from=valid_from, valid_till=valid_till)
+        _upsert_site_access_for_device(tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
+        _log_assignment(tenant_id, device_id, "capture_face", db, performed_by=performed_by, synced=True)
+        db.commit()
+
+        return {
+            "tenant_id": tenant_id,
+            "device_id": device_id,
+            "mode": "direct",
+            "status": "enrollment_triggered" if enroll_result["success"] else "user_created",
+            "message": (
+                "User created and face enrollment mode triggered. Have the user look at the device camera."
+                if enroll_result["success"]
+                else "User created but failed to trigger face enrollment mode. Try again."
+            ),
+        }
+
+    correlation_id = _make_correlation_id(tenant_id, device_id)
+    push_create_user(
+        db, device_id, tenant, correlation_id,
+        active=is_access_active(tenant),
+        valid_till=valid_till,
+        enroll_face_no=face_no,
+    )
+    _upsert_mapping(tenant_id, device_id, db, synced=False, valid_from=valid_from, valid_till=valid_till)
+    _upsert_site_access_for_device(tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
+    _log_assignment(tenant_id, device_id, "capture_face", db, performed_by=performed_by)
+    db.commit()
+
+    return {
+        "tenant_id": tenant_id,
+        "device_id": device_id,
+        "mode": "push",
+        "status": "queued",
+        "correlation_id": correlation_id,
+        "message": (
+            "User creation queued. Device will prompt for face scan on next poll. "
+            "Poll GET /api/push/operations/{correlation_id} for status."
+        ),
+    }
+
+
+def extract_face_from_device(
+    tenant_id: int,
+    device_id: int,
+    db: Session,
+    face_no: int = 1,
+    performed_by=None,
+) -> dict:
+    """Download an existing face template from a device and store it in DB.
+
+    Use this after the user has already scanned their face via capture-face.
+
+    Push mode: queues cmd-id=3 / cred-type=4 (GET_CREDENTIAL for face).
+    Direct mode: calls device API synchronously and saves the template file.
+    """
+    tenant = _get_tenant_or_404(tenant_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
+
+    if device.communication_mode == "direct":
+        client = _make_direct_client(device)
+        matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+        content, file_path = client.extract_face_template(matrix_user_id, face_no)
+        if not content or not file_path:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No face template found on device. Has the user scanned their face yet?",
+            )
+
+        _upsert_credential(tenant_id, db, "face", slot_index=face_no, file_path=file_path)
+        _upsert_mapping(tenant_id, device_id, db, synced=True)
+        _log_assignment(tenant_id, device_id, "extract_face", db, performed_by=performed_by, synced=True)
+        db.commit()
+
+        return {
+            "tenant_id": tenant_id,
+            "device_id": device_id,
+            "mode": "direct",
+            "status": "success",
+            "face_no": face_no,
+            "message": "Face template extracted from device and stored.",
+        }
+
+    correlation_id = _make_correlation_id(tenant_id, device_id)
+    push_get_face(db, device_id, tenant_id, face_no, correlation_id)
+    _upsert_mapping(tenant_id, device_id, db, synced=False)
+    _log_assignment(tenant_id, device_id, "extract_face", db, performed_by=performed_by)
+    db.commit()
+
+    return {
+        "tenant_id": tenant_id,
+        "device_id": device_id,
+        "mode": "push",
+        "status": "queued",
+        "correlation_id": correlation_id,
+        "message": "GET_CREDENTIAL (face) queued. Poll GET /api/push/operations/{correlation_id} for status.",
+    }
 
 
 def enroll_new_tenant(

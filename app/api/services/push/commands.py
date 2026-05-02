@@ -33,6 +33,8 @@ _SENSITIVE_PARAM_NAMES = {
     "pin",
     "card1",
     "card2",
+    "card-1",
+    "card-2",
 }
 
 
@@ -200,6 +202,10 @@ def push_create_user(
     active: bool = True,
     valid_till: datetime | None = None,
     enroll_finger_index: int | None = None,
+    enroll_face_no: int | None = None,
+    card1: str | None = None,
+    card2: str | None = None,
+    user_pin: str | None = None,
 ) -> DeviceConfig:
     """Queue config-id=10 to create/update a user on a push-mode device.
 
@@ -239,10 +245,19 @@ def push_create_user(
         params["validity-date-mm"] = "12"
         params["validity-date-yyyy"] = "2037"
 
+    if card1:
+        params["card-1"] = card1
+    if card2:
+        params["card-2"] = card2
+    if user_pin:
+        params["user-pin"] = user_pin
+
     # Private metadata — stripped by getconfig before sending to device.
     # Tells the callback to queue ENROLL after user creation succeeds.
     if enroll_finger_index is not None:
         params["_enroll_finger_index"] = str(enroll_finger_index)
+    if enroll_face_no is not None:
+        params["_enroll_face_no"] = str(enroll_face_no)
 
     return queue_config(
         db=db,
@@ -396,5 +411,104 @@ def push_get_user_count(
         device_id=device_id,
         cmd_id=CMD.GET_USER_COUNT,
         params={},
+        correlation_id=correlation_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Face credential commands (ARGO FACE and similar devices)
+# ---------------------------------------------------------------------------
+# Credential type mapping differs between ENROLL and GET/SET/DELETE:
+#   ENROLL (cmd-id=1): cred-type=6 for Face
+#   GET/SET/DELETE:    cred-type=4 for Face
+
+
+def push_enroll_face(
+    db: Session,
+    device_id: int,
+    tenant_id: int,
+    face_no: int = 1,
+    correlation_id: str | None = None,
+) -> DeviceCommand:
+    """Queue cmd-id=1 (ENROLL_CREDENTIAL) with cred-type=6 to trigger face enrollment on device."""
+    matrix_user_id = resolve_matrix_user_id(db, device_id, tenant_id)
+    return queue_command(
+        db=db,
+        device_id=device_id,
+        cmd_id=CMD.ENROLL_CREDENTIAL,
+        params={
+            "cred-type": "6",  # 6=Face for ENROLL
+            "user-id": matrix_user_id,
+            "face-no": str(face_no),
+        },
+        correlation_id=correlation_id,
+    )
+
+
+def push_get_face(
+    db: Session,
+    device_id: int,
+    tenant_id: int,
+    face_no: int = 1,
+    correlation_id: str | None = None,
+) -> DeviceCommand:
+    """Queue cmd-id=3 (GET_CREDENTIAL) with cred-type=4 to download face template from device."""
+    matrix_user_id = resolve_matrix_user_id(db, device_id, tenant_id)
+    return queue_command(
+        db=db,
+        device_id=device_id,
+        cmd_id=CMD.GET_CREDENTIAL,
+        params={
+            "cred-type": "4",  # 4=Face for GET/SET/DELETE
+            "user-id": matrix_user_id,
+            "face-no": str(face_no),
+        },
+        correlation_id=correlation_id,
+    )
+
+
+def push_set_face(
+    db: Session,
+    device_id: int,
+    tenant_id: int,
+    face_no: int,
+    template_path: str,
+    correlation_id: str | None = None,
+) -> DeviceCommand:
+    """Queue cmd-id=4 (SET_CREDENTIAL) with cred-type=4 to push a face template to device."""
+    with open(template_path, "rb") as f:
+        template_bytes = f.read()
+    template_b64 = base64.b64encode(template_bytes).decode("ascii")
+    matrix_user_id = resolve_matrix_user_id(db, device_id, tenant_id)
+    return queue_command(
+        db=db,
+        device_id=device_id,
+        cmd_id=CMD.SET_CREDENTIAL,
+        params={
+            "cred-type": "4",  # 4=Face for GET/SET/DELETE
+            "user-id": matrix_user_id,
+            "face-no": str(face_no),
+            "data-1": template_b64,
+        },
+        correlation_id=correlation_id,
+    )
+
+
+def push_delete_face(
+    db: Session,
+    device_id: int,
+    tenant_id: int,
+    correlation_id: str | None = None,
+) -> DeviceCommand:
+    """Queue cmd-id=2 (DELETE_CREDENTIAL) with cred-type=4 to remove face templates from device."""
+    matrix_user_id = resolve_matrix_user_id(db, device_id, tenant_id)
+    return queue_command(
+        db=db,
+        device_id=device_id,
+        cmd_id=CMD.DELETE_CREDENTIAL,
+        params={
+            "cred-type": "4",  # 4=Face for GET/SET/DELETE
+            "user-id": matrix_user_id,
+        },
         correlation_id=correlation_id,
     )

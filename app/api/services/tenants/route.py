@@ -14,8 +14,12 @@ from app.api.services.tenants.enrollment import (
     enroll_to_device,
     enroll_to_devices_bulk,
     enroll_to_site,
+    extract_face_from_device,
     extract_fingerprint_from_device,
+    register_and_capture_face,
     register_and_capture_fingerprint,
+    set_card_credential,
+    set_pin_credential,
     unenroll_from_device,
     unenroll_from_devices_bulk,
     update_device_access_validity,
@@ -24,10 +28,14 @@ from app.api.services.tenants.enrollment import (
 )
 from app.api.services.tenants.schema import (
     BulkEnrollRequest,
+    CaptureFaceRequest,
     CaptureRequest,
     DeviceAccessRead,
     DeviceAccessUpdate,
     DeviceEnrollRequest,
+    ExtractFaceRequest,
+    SetCardRequest,
+    SetPinRequest,
     SiteEnrollRequest,
     TenantCreate,
     TenantRead,
@@ -551,6 +559,132 @@ def extract_fingerprint_route(
         device_id=device_id,
         db=db,
         finger_index=finger_index,
+        performed_by=current_user.user_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Card, PIN, and face credentials
+# ---------------------------------------------------------------------------
+
+
+@router.post("/{tenant_id}/set-card")
+def set_card_route(
+    tenant_id: int,
+    payload: SetCardRequest,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """
+    Set a card (RFID / QR) credential for a tenant and push it to the device.
+
+    The card number is stored in the DB and included in all future enroll/sync
+    operations for this tenant. Works for standard RFID card devices and QR
+    devices (QR code encodes the same card number value).
+
+    Supply `card2` to assign a secondary card (e.g. a backup or spare card).
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+    return set_card_credential(
+        tenant_id=tenant_id,
+        device_id=payload.device_id,
+        card1=payload.card1,
+        card2=payload.card2,
+        db=db,
+        performed_by=current_user.user_id,
+        valid_from=payload.valid_from,
+        valid_till=payload.valid_till,
+    )
+
+
+@router.post("/{tenant_id}/set-pin")
+def set_pin_route(
+    tenant_id: int,
+    payload: SetPinRequest,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """
+    Set a PIN credential for a tenant and push it to the device.
+
+    The PIN is stored in the DB and included in all future enroll/sync
+    operations for this tenant. Must be 4–8 digits.
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+    return set_pin_credential(
+        tenant_id=tenant_id,
+        device_id=payload.device_id,
+        pin=payload.pin,
+        db=db,
+        performed_by=current_user.user_id,
+        valid_from=payload.valid_from,
+        valid_till=payload.valid_till,
+    )
+
+
+@router.post("/{tenant_id}/capture-face")
+def capture_face_route(
+    tenant_id: int,
+    payload: CaptureFaceRequest,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """
+    Create the user on a face device and trigger face enrollment mode.
+
+    For push-mode devices (ARGO FACE etc.): returns immediately with a
+    correlation_id. The device will prompt the user to look at the camera
+    on its next poll. Poll GET /api/push/operations/{correlation_id} for status.
+
+    For direct-mode devices: triggers face scan mode synchronously.
+
+    Supply `valid_from` / `valid_till` to set a per-device access window.
+    `face_no` selects the face slot (1–30, default 1).
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+    return register_and_capture_face(
+        tenant_id=tenant_id,
+        device_id=payload.device_id,
+        db=db,
+        face_no=payload.face_no,
+        performed_by=current_user.user_id,
+        valid_from=payload.valid_from,
+        valid_till=payload.valid_till,
+    )
+
+
+@router.post("/{tenant_id}/extract-face")
+def extract_face_route(
+    tenant_id: int,
+    payload: ExtractFaceRequest,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """
+    Download an existing face template from a device and store it in DB.
+
+    Call this after the user has already scanned their face via `capture-face`.
+
+    For direct-mode devices: fetches the template synchronously and saves it.
+    For push-mode devices: queues GET_CREDENTIAL (cred-type=4) and returns
+    a correlation_id to poll.
+
+    `face_no` selects the face slot (1–30, default 1).
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+    return extract_face_from_device(
+        tenant_id=tenant_id,
+        device_id=payload.device_id,
+        db=db,
+        face_no=payload.face_no,
         performed_by=current_user.user_id,
     )
 

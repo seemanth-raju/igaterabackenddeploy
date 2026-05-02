@@ -352,6 +352,8 @@ class MatrixDeviceClient:
         validity_end_date: date | None = None,
         enable_fr: str | None = None,
         card1: str | None = None,
+        card2: str | None = None,
+        user_pin: str | None = None,
     ) -> dict:
         """
         Create or update a user on the device.
@@ -362,7 +364,9 @@ class MatrixDeviceClient:
             active: Whether user can access the door
             validity_end_date: Optional date after which device denies access
             enable_fr: "1" to enable face recognition, "0" to disable
-            card1: Optional RFID card number
+            card1: Primary RFID card number
+            card2: Secondary RFID card number
+            user_pin: 4–8 digit PIN
         """
         params: dict = {
             "action": "set",
@@ -381,6 +385,10 @@ class MatrixDeviceClient:
             params["enable-fr"] = str(enable_fr)
         if card1:
             params["card1"] = str(card1)
+        if card2:
+            params["card2"] = str(card2)
+        if user_pin:
+            params["user-pin"] = str(user_pin)
 
         response = requests.get(
             f"{self.base_url}/users",
@@ -792,6 +800,94 @@ class MatrixDeviceClient:
         response = requests.get(
             f"{self.base_url}/credential",
             params={"action": "delete", "user-id": str(user_id), "type": "1", "format": "xml"},
+            auth=self.auth,
+            timeout=self.timeout,
+            verify=self.verify_tls,
+        )
+        success = self._is_success(response)
+        return {"status_code": response.status_code, "response": response.text, "success": success}
+
+    # ------------------------------------------------------------------
+    # Face credentials (ARGO FACE and similar face-recognition devices)
+    # ------------------------------------------------------------------
+    # Direct API type values differ from push cred-type values.
+    # enrolluser: type=4 for face   |   credential: type=2 for face
+
+    def trigger_face_enrollment(self, user_id: str, face_no: int = 1) -> dict:
+        """Put the device into face enrollment mode for this user.
+
+        The user must then look at the device camera.
+        After enrollment completes, call extract_face_template() to retrieve it.
+        """
+        response = requests.get(
+            f"{self.base_url}/enrolluser",
+            params={
+                "action": "enroll",
+                "type": "4",        # 4 = Face for direct enrolluser API
+                "user-id": str(user_id),
+                "face-no": str(face_no),
+                "format": "xml",
+            },
+            auth=self.auth,
+            timeout=self.timeout,
+            verify=self.verify_tls,
+        )
+        success = self._is_success(response)
+        return {"status_code": response.status_code, "response": response.text, "success": success}
+
+    def get_face_template(self, user_id: str, face_no: int = 1) -> bytes | None:
+        """Fetch a face template binary from the device. Returns None if not found."""
+        return self._fetch_credential_binary({
+            "action": "get",
+            "type": "2",            # 2 = Face for direct credential API
+            "user-id": str(user_id),
+            "face-no": str(face_no),
+        })
+
+    def extract_face_template(self, user_id: str, face_no: int = 1) -> tuple[bytes | None, str | None]:
+        """Pull a face template from the device and save it to local storage.
+
+        Returns (template_bytes, file_path) or (None, None) if not yet captured.
+        """
+        content = self.get_face_template(user_id, face_no)
+        if content is None:
+            return None, None
+
+        storage_path = get_fingerprint_storage_path()
+        file_name = f"tenant_{user_id}_face_{face_no}.dat"
+        file_path = storage_path / file_name
+        file_path.write_bytes(content)
+        return content, str(file_path)
+
+    def import_face_template(self, user_id: str, file_path: str, face_no: int = 1) -> dict:
+        """Push a stored face template to the device.
+
+        Use this to enroll a tenant on additional face devices without requiring
+        them to scan again.
+        """
+        if not os.path.exists(file_path):
+            return {"status_code": 0, "response": f"File not found: {file_path}", "success": False}
+
+        with open(file_path, "rb") as f:
+            binary_data = f.read()
+
+        response = requests.post(
+            f"{self.base_url}/credential",
+            params={"action": "set", "type": "2", "user-id": str(user_id), "face-no": str(face_no)},
+            data=binary_data,
+            headers={"Content-Type": "application/octet-stream"},
+            auth=self.auth,
+            timeout=self.timeout,
+            verify=self.verify_tls,
+        )
+        success = self._is_success(response)
+        return {"status_code": response.status_code, "response": response.text, "success": success}
+
+    def delete_face_template(self, user_id: str) -> dict:
+        """Delete all face templates for a user on the device."""
+        response = requests.get(
+            f"{self.base_url}/credential",
+            params={"action": "delete", "user-id": str(user_id), "type": "2", "format": "xml"},
             auth=self.auth,
             timeout=self.timeout,
             verify=self.verify_tls,

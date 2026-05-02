@@ -589,13 +589,26 @@ Behavior:
 
 ---
 
-## 10. If The Frontend Needs Fingerprint Capture For New Users
+## 10. Credential Enrollment For New Users
 
-This is separate from migration.
+This is separate from migration. Use these flows when adding a new person through the app.
 
-Use this only for a new person being added through the app, not for the migration page.
+The app supports multiple credential types. Use the right endpoint for each device type:
 
-### Capture Fingerprint
+| Device type | Endpoint to use |
+|---|---|
+| Finger device (standard) | `POST /capture-fingerprint` |
+| Face device (ARGO FACE) | `POST /capture-face` |
+| Card / RFID device | `POST /set-card` |
+| QR device | `POST /set-card` (QR encodes the card number) |
+| PIN device | `POST /set-pin` |
+
+A user can have multiple credential types stored at once (e.g. finger + card + PIN).
+**Once set, card and PIN are automatically included in every future `enroll` and `sync-device` call — no extra step needed.**
+
+---
+
+### 10.1 Fingerprint Capture
 
 ```bash
 curl -X POST http://your-server/api/tenants/101/capture-fingerprint \
@@ -607,25 +620,135 @@ curl -X POST http://your-server/api/tenants/101/capture-fingerprint \
   }'
 ```
 
-If the backend returns:
-
-```json
-{
-  "status": "queued",
-  "correlation_id": "enroll-101-10-abcd1234"
-}
-```
-
-then the frontend can poll:
+Push mode returns a `correlation_id` to poll:
 
 ```bash
 curl http://your-server/api/tenants/101/enrollment-status/enroll-101-10-abcd1234 \
   -H "Authorization: Bearer <access_token>"
 ```
 
-Again:
-- this polling flow is for enrollment/capture flows
-- it is not the normal CRUD pattern for tenant/group/device pages
+---
+
+### 10.2 Card / QR Credential
+
+Use this for RFID card readers and QR code readers. Both use the same endpoint — QR devices encode the card number as a QR image, the underlying value is the same.
+
+```bash
+curl -X POST http://your-server/api/tenants/101/set-card \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "card1": "1234567890",
+    "valid_from": "2026-06-01T00:00:00",
+    "valid_till": "2027-05-31T23:59:59"
+  }'
+```
+
+Optional second card (`card2`). `valid_from` / `valid_till` are optional — if supplied they update the tenant's global validity and are sent to the device.
+
+Push mode response:
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-101-10-c1d2e3f4",
+  "message": "Card credential queued for device update."
+}
+```
+
+Direct mode response:
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "mode": "direct",
+  "status": "success",
+  "message": "Card credential set on device."
+}
+```
+
+---
+
+### 10.3 PIN Credential
+
+```bash
+curl -X POST http://your-server/api/tenants/101/set-pin \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "pin": "1234",
+    "valid_from": "2026-06-01T00:00:00",
+    "valid_till": "2027-05-31T23:59:59"
+  }'
+```
+
+- `pin` must be 4–8 digits.
+- `valid_from` / `valid_till` are optional — same behaviour as `set-card`.
+- Response shape is the same as `set-card`.
+
+---
+
+### 10.4 Face Capture (Face Devices)
+
+Use this for face-recognition devices such as Matrix COSEC ARGO FACE.
+
+```bash
+curl -X POST http://your-server/api/tenants/101/capture-face \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "face_no": 1,
+    "valid_from": "2026-06-01T00:00:00",
+    "valid_till": "2027-05-31T23:59:59"
+  }'
+```
+
+`valid_from` / `valid_till` are optional — if supplied they update the tenant's global validity.
+
+Push mode returns a `correlation_id` — poll it just like fingerprint:
+```bash
+curl http://your-server/api/tenants/101/enrollment-status/enroll-101-10-f1a2b3c4 \
+  -H "Authorization: Bearer <access_token>"
+```
+
+Direct mode returns `"status": "enrollment_triggered"` — the user must look at the device camera after the API call returns. Then call `extract-face` to pull the template into the DB.
+
+Once the face template is stored the tenant's `has_face` field will be `true`.
+
+---
+
+### 10.5 Extract Face Template (Direct Mode)
+
+After the user has scanned their face via `capture-face`, call this to pull the template from the device and store it in the DB. Required for direct-mode devices; push-mode devices save the template automatically via callback.
+
+```bash
+curl -X POST http://your-server/api/tenants/101/extract-face \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "face_no": 1
+  }'
+```
+
+Direct mode response:
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "mode": "direct",
+  "status": "success",
+  "face_no": 1,
+  "message": "Face template extracted from device and stored."
+}
+```
+
+Push mode queues a `GET_CREDENTIAL` command and returns a `correlation_id` to poll. Returns `404` if the user hasn't scanned their face yet.
 
 ---
 
@@ -664,11 +787,16 @@ Recommended UI pages and the APIs they should use:
 - `DELETE /tenants/{tenant_id}`
 
 ### Device Assignment / Enrollment Page
-- `POST /tenants/{tenant_id}/enroll`
-- `POST /tenants/{tenant_id}/enroll-bulk`
-- `POST /tenants/{tenant_id}/enroll-site`
-- `GET /tenants/{tenant_id}/device-access`
-- `PATCH /tenants/{tenant_id}/device-access/{device_id}`
+- `POST /tenants/{tenant_id}/capture-fingerprint` — finger devices
+- `POST /tenants/{tenant_id}/capture-face` — face devices (ARGO FACE etc.)
+- `POST /tenants/{tenant_id}/extract-face` — pull face template after scan (direct mode)
+- `POST /tenants/{tenant_id}/set-card` — card / RFID / QR devices
+- `POST /tenants/{tenant_id}/set-pin` — PIN devices
+- `POST /tenants/{tenant_id}/enroll` — push all stored credentials to a device
+- `POST /tenants/{tenant_id}/enroll-bulk` — push to multiple devices
+- `POST /tenants/{tenant_id}/enroll-site` — push to all devices in a site
+- `GET /tenants/{tenant_id}/device-access` — list enrolled devices + access windows
+- `PATCH /tenants/{tenant_id}/device-access/{device_id}` — update validity dates
 
 ---
 
@@ -743,25 +871,43 @@ This matches the business flow:
 
 ## 14. Quick Reference
 
-### New endpoints the frontend should know
-
+### Authentication
+- `POST /auth/login`
+- `POST /auth/refresh`
+- `GET /auth/me`
 - `POST /auth/change-password`
-- `POST /devices/import-enrollment`
 
-### Existing endpoints used after migration
+### Tenant CRUD
+- `GET /tenants` — list (includes `finger_count`, `has_face`, `has_card`, `enrolled_device_count`)
+- `POST /tenants` — create
+- `PATCH /tenants/{tenant_id}` — update
+- `DELETE /tenants/{tenant_id}` — delete
 
-- `GET /tenants`
-- `PATCH /tenants/{tenant_id}`
-- `GET /groups`
-- `POST /groups`
+### Credential enrollment
+- `POST /tenants/{tenant_id}/capture-fingerprint` — finger scan (all standard devices)
+- `POST /tenants/{tenant_id}/capture-face` — face scan (ARGO FACE etc.)
+- `POST /tenants/{tenant_id}/extract-face` — pull face template after scan
+- `POST /tenants/{tenant_id}/set-card` — RFID card or QR code value
+- `POST /tenants/{tenant_id}/set-pin` — 4–8 digit PIN
+
+### Device push / sync
+- `POST /tenants/{tenant_id}/enroll` — push all stored credentials to one device
+- `POST /tenants/{tenant_id}/enroll-bulk` — push to multiple devices
+- `POST /tenants/{tenant_id}/enroll-site` — push to all devices in a site
+- `PUT /tenants/{tenant_id}/sync-device` — re-sync one device after edits
+- `PUT /tenants/{tenant_id}/sync-devices` — re-sync multiple devices
+- `GET /tenants/{tenant_id}/enrollment-status/{correlation_id}` — poll push-mode result
+
+### Access windows
+- `GET /tenants/{tenant_id}/device-access`
+- `PATCH /tenants/{tenant_id}/device-access/{device_id}`
+
+### Groups, devices, migration
+- `GET /groups` / `POST /groups` / `PATCH /groups/{group_id}`
 - `POST /groups/{group_id}/members/{tenant_id}`
-- `DELETE /groups/{group_id}/members/{tenant_id}`
-- `GET /devices`
-- `POST /devices`
-- `POST /tenants/{tenant_id}/enroll`
-- `POST /tenants/{tenant_id}/enroll-bulk`
-- `POST /tenants/{tenant_id}/enroll-site`
+- `GET /devices` / `POST /devices` / `POST /devices/{device_id}/ping`
+- `POST /devices/import-enrollment`
 
 ---
 
-Last updated: 2026-04-19
+Last updated: 2026-05-02

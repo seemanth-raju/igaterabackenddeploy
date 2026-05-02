@@ -171,3 +171,38 @@ class DeviceAccessRead(BaseModel):
     is_synced: bool
     last_sync_at: datetime | None
     created_at: datetime
+
+
+class SetCardRequest(BaseModel):
+    """Request body for POST /tenants/{id}/set-card."""
+
+    device_id: int = Field(..., description="Target device.")
+    card1: str = Field(..., description="Primary card number (RFID / QR-encoded value).")
+    card2: str | None = Field(default=None, description="Secondary card number (optional).")
+    valid_from: LocalDatetime = Field(default=None, description="Access window start — stored globally and sent to device.")
+    valid_till: LocalDatetime = Field(default=None, description="Access window end — stored globally and sent to device.")
+
+
+class SetPinRequest(BaseModel):
+    """Request body for POST /tenants/{id}/set-pin."""
+
+    device_id: int = Field(..., description="Target device.")
+    pin: str = Field(..., min_length=4, max_length=8, description="4–8 digit PIN.")
+    valid_from: LocalDatetime = Field(default=None, description="Access window start — stored globally and sent to device.")
+    valid_till: LocalDatetime = Field(default=None, description="Access window end — stored globally and sent to device.")
+
+
+class CaptureFaceRequest(BaseModel):
+    """Request body for POST /tenants/{id}/capture-face."""
+
+    device_id: int = Field(..., description="Device where the user will scan their face.")
+    face_no: int = Field(default=1, ge=1, le=30, description="Face slot (1–30).")
+    valid_from: LocalDatetime = Field(default=None)
+    valid_till: LocalDatetime = Field(default=None)
+
+
+class ExtractFaceRequest(BaseModel):
+    """Request body for POST /tenants/{id}/extract-face."""
+
+    device_id: int = Field(..., description="Device the user has already scanned their face on.")
+    face_no: int = Field(default=1, ge=1, le=30, description="Face slot (1–30).")

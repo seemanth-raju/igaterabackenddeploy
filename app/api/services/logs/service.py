@@ -10,7 +10,7 @@ from xml.sax.saxutils import escape
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.services.logs.events import get_event_meta
+from app.api.services.logs.events import decode_auth_used, get_event_meta
 from database.models import (
     AccessEvent,
     Device,
@@ -166,7 +166,7 @@ def sync_logs_from_device(device_id: int, db: Session) -> dict:
             event_type=meta.event_type,
             event_time=raw["event_time"],
             access_granted=meta.access_granted,
-            auth_used=meta.auth_used,
+            auth_used=decode_auth_used(raw.get("detail_3", "")) or meta.auth_used,
             cosec_event_id=evt_id,
             device_seq_number=raw.get("seq_number"),
             device_rollover_count=raw.get("rollover_count"),

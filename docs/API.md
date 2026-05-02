@@ -469,8 +469,194 @@ Use this when `capture-fingerprint` timed out but the user scanned their finger 
 
 ---
 
+### POST `/tenants/{tenant_id}/set-card`
+Set a card (RFID / QR) credential for a tenant and push it to the device.
+
+The card number is stored in the DB and **automatically included** in all future `enroll`, `enroll-bulk`, and `sync-device` calls — no extra step needed.
+
+Works for standard RFID card devices and QR devices (a QR code is just the card number encoded as a QR image; the numeric value is the same).
+
+**Request**
+```json
+{
+  "device_id": 5,
+  "card1": "1234567890",
+  "card2": null,
+  "valid_from": "2026-06-01T00:00:00Z",
+  "valid_till": "2027-05-31T23:59:59Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Target device |
+| `card1` | string | Yes | Primary card number |
+| `card2` | string | No | Secondary / backup card number |
+| `valid_from` | datetime | No | Access start date — updates tenant global validity |
+| `valid_till` | datetime | No | Access end date — updates tenant global validity and sent to device |
+
+**Response `200` — push mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-42-5-c1d2e3f4",
+  "message": "Card credential queued for device update. Poll GET /api/push/operations/{correlation_id} for status."
+}
+```
+
+**Response `200` — direct mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "direct",
+  "status": "success",
+  "message": "Card credential set on device."
+}
+```
+
+---
+
+### POST `/tenants/{tenant_id}/set-pin`
+Set a PIN credential for a tenant and push it to the device.
+
+The PIN is stored in the DB and **automatically included** in all future `enroll`, `enroll-bulk`, and `sync-device` calls.
+
+**Request**
+```json
+{
+  "device_id": 5,
+  "pin": "1234",
+  "valid_from": "2026-06-01T00:00:00Z",
+  "valid_till": "2027-05-31T23:59:59Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Target device |
+| `pin` | string (4–8 digits) | Yes | Numeric PIN |
+| `valid_from` | datetime | No | Access start date — updates tenant global validity |
+| `valid_till` | datetime | No | Access end date — updates tenant global validity and sent to device |
+
+**Response `200` — push mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-42-5-d2e3f4a5",
+  "message": "PIN queued for device update. Poll GET /api/push/operations/{correlation_id} for status."
+}
+```
+
+**Response `200` — direct mode** — same shape as `set-card` with `status: "success"`.
+
+---
+
+### POST `/tenants/{tenant_id}/capture-face`
+Trigger face enrollment on a face-recognition device (e.g. Matrix COSEC ARGO FACE).
+
+Mirrors `capture-fingerprint` but for face: creates the user on the device and puts the device into face-scan mode. The user must look at the camera. On push-mode devices the template is saved via callback after the device sends the result; poll `correlation_id` for completion.
+
+Once a face template is stored in the DB it is **pushed automatically** on subsequent `enroll` and `sync-device` calls.
+
+**Request**
+```json
+{
+  "device_id": 5,
+  "face_no": 1,
+  "valid_from": "2026-06-01T00:00:00Z",
+  "valid_till": "2027-05-31T23:59:59Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Target face-recognition device |
+| `face_no` | int (1–30) | No | Face slot, default `1` |
+| `valid_from` | datetime | No | Access start date |
+| `valid_till` | datetime | No | Access end date |
+
+**Response `200` — push mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-42-5-f1a2b3c4",
+  "message": "User creation queued. Device will prompt for face scan on next poll."
+}
+```
+
+**Response `200` — direct mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "direct",
+  "status": "enrollment_triggered",
+  "message": "User created and face enrollment mode triggered. Have the user look at the device camera."
+}
+```
+
+Poll `GET /tenants/{tenant_id}/enrollment-status/{correlation_id}` (push mode) or check the tenant's `has_face: true` field to confirm the template was saved.
+
+---
+
+### POST `/tenants/{tenant_id}/extract-face`
+Download an existing face template from a device and store it in the DB.
+
+Call this after the user has already scanned their face via `capture-face`. Mirrors `extract-fingerprint` but for face templates. Once stored, the template is pushed automatically on all subsequent `enroll` and `sync-device` calls.
+
+**Request**
+```json
+{
+  "device_id": 5,
+  "face_no": 1
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Device the user has already scanned their face on |
+| `face_no` | int (1–30) | No | Face slot to retrieve, default `1` |
+
+**Response `200` — push mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-42-5-a1b2c3d4",
+  "message": "GET_CREDENTIAL (face) queued. Poll GET /api/push/operations/{correlation_id} for status."
+}
+```
+
+**Response `200` — direct mode**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "direct",
+  "status": "success",
+  "face_no": 1,
+  "message": "Face template extracted from device and stored."
+}
+```
+
+Returns `404` if no face template is found on the device.
+
+---
+
 ### POST `/tenants/{tenant_id}/enroll`
-Enroll a tenant on a device. If a fingerprint template is already stored, it is pushed automatically — no physical presence required.
+Enroll a tenant on a device. All stored credentials are pushed automatically — fingerprint, face, card, and PIN — no physical presence required.
 
 Supply `valid_from` / `valid_till` to update the tenant's global validity and send the same expiry to this device.
 
@@ -508,12 +694,18 @@ Supply `valid_from` / `valid_till` to update the tenant's global validity and se
 {
   "tenant_id": 42,
   "device_id": 5,
+  "mode": "push",
   "status": "queued",
   "correlation_id": "enroll-42-5-b2c3d4e5",
   "fingerprint_queued": true,
-  "message": "User creation + fingerprint push queued."
+  "face_queued": false,
+  "message": "User creation + fingerprint queued. Poll GET /api/push/operations/{correlation_id} for status."
 }
 ```
+
+- `fingerprint_queued: true` — a stored fingerprint template was included.
+- `face_queued: true` — a stored face template was included.
+- Card and PIN are embedded in the user config (config-id=10) so they don't have separate queued flags — they are always sent if stored.
 
 ---
 
@@ -1605,7 +1797,10 @@ GET /tenants?search=john&group_id=11&skip=0&limit=50
 
 ---
 
-### Page 2 — Enroll Fingerprint
+### Page 2 — Enroll Credentials
+
+Supports fingerprint (all devices), face (ARGO FACE), card / QR (card devices), and PIN.
+Card and PIN are set via `set-card` / `set-pin` and auto-included in every future `enroll`/`sync`. Face works like fingerprint — capture once, push to other devices.
 
 **Step 1 — Load device list for the dropdown:**
 ```
@@ -1613,7 +1808,7 @@ GET /devices?skip=0&limit=100
 → Show only online devices (status: "online") in the device picker
 ```
 
-**Step 2 — Capture fingerprint:**
+**Step 2a — Capture fingerprint (finger devices):**
 
 #### Scenario A — Fingerprint captured successfully (recommended)
 
@@ -1681,19 +1876,50 @@ GET /devices?skip=0&limit=100
    → Pushes to all target devices
 ```
 
+**Step 2b — Set card / QR credential (card and QR devices):**
+```
+POST /tenants/{tenant_id}/set-card
+Body: { "device_id": 3, "card1": "1234567890" }
+→ Stores card number in DB and pushes to device via config-id=10
+→ Card is included automatically in all future enroll/sync calls
+→ QR devices work the same way — QR code encodes the same card number
+```
+
+**Step 2c — Set PIN credential:**
+```
+POST /tenants/{tenant_id}/set-pin
+Body: { "device_id": 3, "pin": "1234" }
+→ Stores PIN in DB and pushes to device via config-id=10
+→ PIN is included automatically in all future enroll/sync calls
+```
+
+**Step 2d — Capture face (ARGO FACE and similar devices):**
+```
+POST /tenants/{tenant_id}/capture-face
+Body: { "device_id": 3, "face_no": 1 }
+→ Creates user on device + triggers face-scan mode
+→ User looks at device camera
+→ Face template is stored in DB via callback (push mode)
+→ Once stored, face is pushed automatically on future enroll/sync calls
+```
+
 ---
 
 ### After Enrollment — Sync & Manage
 
 | Action | Endpoint | When to use |
 |---|---|---|
-| Update tenant name/details on a device | `PUT /tenants/{id}/sync-device` | After editing tenant details |
+| Update tenant name/details on a device | `PUT /tenants/{id}/sync-device` | After editing tenant details — re-pushes fingerprint, face, card, PIN |
 | Sync to all enrolled devices | `PUT /tenants/{id}/sync-devices` | After bulk detail update |
 | Remove from one device | `DELETE /tenants/{id}/unenroll` | User no longer needs access |
 | Remove from multiple devices | `DELETE /tenants/{id}/unenroll-bulk` | Revoke access in bulk |
 | Check which devices a tenant is on | `GET /device-mappings?tenant_id={id}` | Show enrolled device list |
 | Read per-device validity dates | `GET /tenants/{id}/device-access` | Show access windows per device |
 | Change dates for one device | `PATCH /tenants/{id}/device-access/{device_id}` | Extend/shorten access on one device |
+| Set / update card credential | `POST /tenants/{id}/set-card` | Assign new card or change card number |
+| Set / update PIN | `POST /tenants/{id}/set-pin` | Assign or change PIN |
+| Capture face (face devices) | `POST /tenants/{id}/capture-face` | First-time face enrollment on a face device |
+| Extract face template | `POST /tenants/{id}/extract-face` | Pull face template from device after scan |
 
 ---
 
