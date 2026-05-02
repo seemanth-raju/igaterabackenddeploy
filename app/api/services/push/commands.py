@@ -13,6 +13,7 @@ Usage:
 
 import base64
 import logging
+from datetime import datetime
 from enum import IntEnum
 
 from sqlalchemy.orm import Session
@@ -197,7 +198,7 @@ def push_create_user(
     tenant: Tenant,
     correlation_id: str,
     active: bool = True,
-    valid_till: "datetime | None" = None,
+    valid_till: datetime | None = None,
     enroll_finger_index: int | None = None,
 ) -> DeviceConfig:
     """Queue config-id=10 to create/update a user on a push-mode device.
@@ -209,8 +210,6 @@ def push_create_user(
                     when not supplied. Pass the value from DeviceUserMapping.valid_till
                     so each device can have an independent validity window.
     """
-    from datetime import datetime as _dt
-
     matrix_user_id = resolve_matrix_user_id(db, device_id, tenant.tenant_id)
 
     # Per-device date wins; fall back to global tenant date
@@ -218,7 +217,7 @@ def push_create_user(
         tenant.global_access_till.date() if tenant.global_access_till else None
     )
     # Normalise datetime → date if caller passed a full datetime
-    if isinstance(effective_till, _dt):
+    if isinstance(effective_till, datetime):
         effective_till = effective_till.date()
 
     params = {
@@ -238,7 +237,7 @@ def push_create_user(
         params["validity-enable"] = "1"
         params["validity-date-dd"] = "31"
         params["validity-date-mm"] = "12"
-        params["validity-date-yyyy"] = "2099"
+        params["validity-date-yyyy"] = "2037"
 
     # Private metadata — stripped by getconfig before sending to device.
     # Tells the callback to queue ENROLL after user creation succeeds.
