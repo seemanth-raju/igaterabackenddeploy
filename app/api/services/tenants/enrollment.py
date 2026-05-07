@@ -45,9 +45,7 @@ from app.api.services.companies.service import ensure_company_user_quota
 from app.api.services.groups.service import validate_group_selection
 from app.api.services.push.commands import (
     push_create_user,
-    push_delete_credential,
     push_delete_user,
-    push_enroll_face,
     push_get_credential,
     push_get_face,
     push_set_credential,
@@ -397,6 +395,7 @@ def _direct_enroll(
 ) -> dict:
     client = _make_direct_client(device)
     matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+    supported = set(device.credential_types or ["finger"])
     card1, card2, user_pin = _get_stored_card_pin(tenant.tenant_id, db)
 
     create_result = client.create_user(
@@ -404,9 +403,9 @@ def _direct_enroll(
         name=tenant.full_name,
         active=is_access_active(tenant),
         validity_end_date=_effective_valid_till_date(valid_till, tenant),
-        card1=card1,
-        card2=card2,
-        user_pin=user_pin,
+        card1=card1 if "card" in supported else None,
+        card2=card2 if "card" in supported else None,
+        user_pin=user_pin if "pin" in supported else None,
     )
     if not create_result["success"]:
         raise HTTPException(
@@ -415,16 +414,18 @@ def _direct_enroll(
         )
 
     fp_pushed = False
-    credential = _find_fingerprint_credential(tenant.tenant_id, db, finger_index)
-    if credential and credential.file_path:
-        fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, finger_index)
-        fp_pushed = fp_result["success"]
+    if "finger" in supported:
+        credential = _find_fingerprint_credential(tenant.tenant_id, db, finger_index)
+        if credential and credential.file_path:
+            fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, finger_index)
+            fp_pushed = fp_result["success"]
 
     face_pushed = False
-    face_cred = _find_face_credential(tenant.tenant_id, db, face_no=1)
-    if face_cred and face_cred.file_path:
-        face_result = client.import_face_template(matrix_user_id, face_cred.file_path, 1)
-        face_pushed = face_result["success"]
+    if "face" in supported:
+        face_cred = _find_face_credential(tenant.tenant_id, db, face_no=1)
+        if face_cred and face_cred.file_path:
+            face_result = client.import_face_template(matrix_user_id, face_cred.file_path, 1)
+            face_pushed = face_result["success"]
 
     _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=True,
                     valid_from=valid_from, valid_till=valid_till)
@@ -543,6 +544,7 @@ def _direct_update(
 ) -> dict:
     client = _make_direct_client(device)
     matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+    supported = set(device.credential_types or ["finger"])
     card1, card2, user_pin = _get_stored_card_pin(tenant.tenant_id, db)
 
     create_result = client.create_user(
@@ -550,22 +552,24 @@ def _direct_update(
         name=tenant.full_name,
         active=is_access_active(tenant),
         validity_end_date=_effective_valid_till_date(valid_till, tenant),
-        card1=card1,
-        card2=card2,
-        user_pin=user_pin,
+        card1=card1 if "card" in supported else None,
+        card2=card2 if "card" in supported else None,
+        user_pin=user_pin if "pin" in supported else None,
     )
 
     fp_pushed = False
-    credential = _find_fingerprint_credential(tenant.tenant_id, db)
-    if credential and credential.file_path:
-        fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, 1)
-        fp_pushed = fp_result["success"]
+    if "finger" in supported:
+        credential = _find_fingerprint_credential(tenant.tenant_id, db)
+        if credential and credential.file_path:
+            fp_result = client.import_fingerprint(matrix_user_id, credential.file_path, 1)
+            fp_pushed = fp_result["success"]
 
     face_pushed = False
-    face_cred = _find_face_credential(tenant.tenant_id, db, face_no=1)
-    if face_cred and face_cred.file_path:
-        face_result = client.import_face_template(matrix_user_id, face_cred.file_path, 1)
-        face_pushed = face_result["success"]
+    if "face" in supported:
+        face_cred = _find_face_credential(tenant.tenant_id, db, face_no=1)
+        if face_cred and face_cred.file_path:
+            face_result = client.import_face_template(matrix_user_id, face_cred.file_path, 1)
+            face_pushed = face_result["success"]
 
     _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=create_result["success"],
                     valid_from=valid_from, valid_till=valid_till)
@@ -759,25 +763,30 @@ def enroll_to_device(
         return _direct_enroll(tenant, device, db, finger_index, performed_by, valid_from, valid_till)
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
+    supported = set(device.credential_types or ["finger"])
     card1, card2, user_pin = _get_stored_card_pin(tenant_id, db)
 
     push_create_user(
         db, device_id, tenant, correlation_id,
         active=is_access_active(tenant), valid_till=valid_till,
-        card1=card1, card2=card2, user_pin=user_pin,
+        card1=card1 if "card" in supported else None,
+        card2=card2 if "card" in supported else None,
+        user_pin=user_pin if "pin" in supported else None,
     )
 
     fp_queued = False
-    credential = _find_fingerprint_credential(tenant_id, db, finger_index)
-    if credential and credential.file_path:
-        push_set_credential(db, device_id, tenant_id, finger_index, credential.file_path, correlation_id)
-        fp_queued = True
+    if "finger" in supported:
+        credential = _find_fingerprint_credential(tenant_id, db, finger_index)
+        if credential and credential.file_path:
+            push_set_credential(db, device_id, tenant_id, finger_index, credential.file_path, correlation_id)
+            fp_queued = True
 
     face_queued = False
-    face_cred = _find_face_credential(tenant_id, db, face_no=1)
-    if face_cred and face_cred.file_path:
-        push_set_face(db, device_id, tenant_id, 1, face_cred.file_path, correlation_id)
-        face_queued = True
+    if "face" in supported:
+        face_cred = _find_face_credential(tenant_id, db, face_no=1)
+        if face_cred and face_cred.file_path:
+            push_set_face(db, device_id, tenant_id, 1, face_cred.file_path, correlation_id)
+            face_queued = True
 
     _upsert_mapping(tenant_id, device_id, db, synced=False, valid_from=valid_from, valid_till=valid_till)
     _upsert_site_access_for_device(tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
@@ -789,9 +798,9 @@ def enroll_to_device(
         parts.append("fingerprint")
     if face_queued:
         parts.append("face")
-    if card1:
+    if card1 and "card" in supported:
         parts.append("card")
-    if user_pin:
+    if user_pin and "pin" in supported:
         parts.append("PIN")
     cred_summary = (", ".join(parts) + " queued") if parts else "no biometric stored — capture one first"
     return {
@@ -896,25 +905,30 @@ def update_tenant_on_device(
         )
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
+    supported = set(device.credential_types or ["finger"])
     card1, card2, user_pin = _get_stored_card_pin(tenant_id, db)
 
     push_create_user(
         db, device_id, tenant, correlation_id,
         active=is_access_active(tenant), valid_till=effective_valid_till,
-        card1=card1, card2=card2, user_pin=user_pin,
+        card1=card1 if "card" in supported else None,
+        card2=card2 if "card" in supported else None,
+        user_pin=user_pin if "pin" in supported else None,
     )
 
     fp_queued = False
-    credential = _find_fingerprint_credential(tenant_id, db)
-    if credential and credential.file_path:
-        push_set_credential(db, device_id, tenant_id, 1, credential.file_path, correlation_id)
-        fp_queued = True
+    if "finger" in supported:
+        credential = _find_fingerprint_credential(tenant_id, db)
+        if credential and credential.file_path:
+            push_set_credential(db, device_id, tenant_id, 1, credential.file_path, correlation_id)
+            fp_queued = True
 
     face_queued = False
-    face_cred = _find_face_credential(tenant_id, db, face_no=1)
-    if face_cred and face_cred.file_path:
-        push_set_face(db, device_id, tenant_id, 1, face_cred.file_path, correlation_id)
-        face_queued = True
+    if "face" in supported:
+        face_cred = _find_face_credential(tenant_id, db, face_no=1)
+        if face_cred and face_cred.file_path:
+            push_set_face(db, device_id, tenant_id, 1, face_cred.file_path, correlation_id)
+            face_queued = True
 
     _upsert_mapping(tenant_id, device_id, db, synced=False,
                     valid_from=effective_valid_from, valid_till=effective_valid_till)
@@ -990,7 +1004,10 @@ def unenroll_from_device(
         return _direct_unenroll(tenant, device, db, performed_by)
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
-    push_delete_credential(db, device_id, tenant_id, cred_type="1", correlation_id=correlation_id)
+    # DELETE_USER (cmd-id=7) removes the user and all their biometric/card data on
+    # the device regardless of credential type (finger/face/card).  A separate
+    # DELETE_CREDENTIAL is not needed and breaks on devices that don't support
+    # the specific cred-type (e.g. VEGA FAX has no fingerprint slot).
     push_delete_user(db, device_id, tenant_id, correlation_id)
     _log_assignment(tenant_id, device_id, "unenroll", db, performed_by=performed_by)
     db.commit()

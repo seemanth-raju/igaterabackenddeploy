@@ -721,7 +721,8 @@ CREATE TABLE public.device (
     config jsonb DEFAULT '{}'::jsonb,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
     device_serial_number character varying(100) NOT NULL,
-    company_id uuid
+    company_id uuid,
+    credential_types text[] DEFAULT ARRAY['finger']::text[]
 );
 
 

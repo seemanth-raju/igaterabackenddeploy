@@ -497,6 +497,7 @@ def create_device(payload: DeviceCreate, company_id: UUID, db: Session) -> Devic
         push_token_hash=push_token_hash,
         status=payload.status,
         config=payload.config,
+        credential_types=payload.credential_types,
     )
     db.add(device)
     try:
@@ -591,6 +592,8 @@ def update_device(device_id: int, payload: DeviceUpdate, db: Session) -> Device:
         device.status = payload.status
     if "config" in updated:
         device.config = payload.config
+    if "credential_types" in updated:
+        device.credential_types = payload.credential_types
 
     try:
         db.commit()

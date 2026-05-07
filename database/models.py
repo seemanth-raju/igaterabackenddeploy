@@ -16,7 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.base import Base
@@ -166,6 +166,9 @@ class Device(Base):
     status: Mapped[str] = mapped_column(String(20), server_default=text("'offline'"))
     last_heartbeat: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True))
     config: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    credential_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("ARRAY['finger']::text[]")
+    )
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.current_timestamp())
 
     company: Mapped["Company"] = relationship(back_populates="devices")

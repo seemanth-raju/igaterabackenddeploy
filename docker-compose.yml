@@ -36,8 +36,11 @@ services:
   extractor:
     build: ./streamlit_extractor
     restart: unless-stopped
-    ports:
-      - "${EXTRACTOR_PORT:-5000}:5000"
+    network_mode: host
+    # network_mode: host uses the host's network stack directly so the Matrix
+    # device sees the server's real LAN IP instead of the Docker bridge IP.
+    # Port mapping is not used with host networking — the Flask server binds
+    # directly to port 5000 (or EXTRACTOR_PORT) on the host.
 
 volumes:
   postgres_data:

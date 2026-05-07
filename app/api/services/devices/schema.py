@@ -28,6 +28,10 @@ class DeviceCreate(BaseModel):
     push_token: str | None = Field(default=None, min_length=8, description="Shared secret for push-mode device auth (write-only, stored as hash)")
     status: str = Field(default="offline", max_length=20)
     config: dict = Field(default_factory=dict)
+    credential_types: list[str] = Field(
+        default=["finger"],
+        description="Credential types this device supports. Valid values: finger, face, card, pin.",
+    )
 
 
 class DeviceUpdate(BaseModel):
@@ -46,6 +50,10 @@ class DeviceUpdate(BaseModel):
     push_token: str | None = Field(default=None, min_length=8, description="Shared secret for push-mode device auth (write-only)")
     status: str | None = Field(default=None, max_length=20)
     config: dict | None = None
+    credential_types: list[str] | None = Field(
+        default=None,
+        description="Credential types this device supports. Valid values: finger, face, card, pin.",
+    )
 
 
 class DeviceRead(BaseModel):
@@ -66,6 +74,7 @@ class DeviceRead(BaseModel):
     communication_mode: str
     status: str
     config: dict
+    credential_types: list[str]
     created_at: datetime
 
 
