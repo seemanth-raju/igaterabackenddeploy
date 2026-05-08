@@ -242,6 +242,7 @@ Example response:
         "at": "2026-04-19T09:15:00Z"
       }
     },
+    "credential_types": ["finger"],
     "created_at": "2026-04-19T09:15:00Z"
   },
   "device_created": true,
@@ -522,9 +523,14 @@ curl -X POST http://your-server/api/devices \
     "api_password": "12345",
     "api_port": 80,
     "use_https": false,
-    "communication_mode": "direct"
+    "communication_mode": "direct",
+    "credential_types": ["finger"]
   }'
 ```
+
+`credential_types` is optional — defaults to `["finger"]` if omitted. Set it to match what the physical device actually supports. Valid values: `"finger"`, `"face"`, `"card"`, `"pin"`. A device can support multiple: `["finger", "card", "pin"]`.
+
+The backend uses this field during enrollment to decide which stored credentials to push. For example, a face-only device with `["face"]` will not attempt to push fingerprint templates even if the tenant has them.
 
 ### List Devices
 
@@ -826,6 +832,27 @@ The imported enrollment device is stored as a normal device record and becomes t
 
 There is no separate frontend concept of a permanent "default device" flag at the moment.
 
+### credential_types and enrollment
+
+Every device now has a `credential_types` field — an array of strings describing what the physical hardware supports.
+
+| Value | Meaning |
+|---|---|
+| `"finger"` | Fingerprint sensor (standard COSEC devices) |
+| `"face"` | Face recognition camera (COSEC ARGO FACE) |
+| `"card"` | RFID / card reader |
+| `"pin"` | PIN pad |
+
+A device can support multiple: `["finger", "card"]`.
+
+Frontend rules:
+- When creating or editing a device, show a multi-select for credential types and default to `["finger"]`.
+- On the enrollment screen, only offer credential capture options that the selected device supports. For example, if `credential_types` is `["face"]`, hide the fingerprint capture button and show face capture only.
+- The backend will silently skip unsupported credential types during `enroll` / `enroll-bulk`, so mismatches won't cause errors, but the UI should prevent confusion proactively.
+- `PATCH /devices/{device_id}` accepts `credential_types` to update the list after creation.
+
+---
+
 ### Matrix user ids
 
 Imported users keep their Matrix user id internally through device mappings.
@@ -910,4 +937,4 @@ This matches the business flow:
 
 ---
 
-Last updated: 2026-05-02
+Last updated: 2026-05-08

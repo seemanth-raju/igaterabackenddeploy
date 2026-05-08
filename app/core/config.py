@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from uuid import UUID
 
@@ -9,7 +9,26 @@ class Settings(BaseSettings):
     app_debug: bool = False
     create_tables: bool = False
 
+    # Option A — set the full URL directly:
+    #   DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/dbname
+    # Option B — set individual parts (DATABASE_URL is built automatically):
+    #   DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
     database_url: str = "postgresql+psycopg2://user:password@localhost:5432/veda_db"
+    db_host: str | None = None
+    db_port: int | None = None
+    db_name: str | None = None
+    db_user: str | None = None
+    db_password: str | None = None
+
+    @model_validator(mode="after")
+    def _build_database_url(self) -> "Settings":
+        if self.db_host and self.db_name and self.db_user:
+            port = self.db_port or 5432
+            password = self.db_password or ""
+            self.database_url = (
+                f"postgresql+psycopg2://{self.db_user}:{password}@{self.db_host}:{port}/{self.db_name}"
+            )
+        return self
 
     # Required — no default. Set JWT_SECRET_KEY in .env
     jwt_secret_key: str

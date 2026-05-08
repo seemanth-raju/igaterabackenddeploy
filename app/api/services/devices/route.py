@@ -49,6 +49,7 @@ def _to_device_read(device) -> DeviceRead:
         communication_mode=device.communication_mode,
         status=device.status,
         config=device.config,
+        credential_types=device.credential_types or ["finger"],
         created_at=device.created_at,
     )
 
