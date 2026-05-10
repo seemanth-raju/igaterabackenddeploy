@@ -264,7 +264,7 @@ def _on_enroll_credential_done(cmd: DeviceCommand, device: Device, db: Session) 
     user_id = params.get("user-id", "")
     cred_type = params.get("cred-type", "3")
 
-    if cred_type == "1":
+    if cred_type in ("1", "2"):
         # Card enrollment — device returns card value directly in updatecmd
         card_value = result.get("card-1", "")
         if not card_value:
