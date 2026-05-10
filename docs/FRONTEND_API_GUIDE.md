@@ -605,12 +605,13 @@ The app supports multiple credential types. Use the right endpoint for each devi
 |---|---|
 | Finger device (standard) | `POST /capture-fingerprint` |
 | Face device (ARGO FACE) | `POST /capture-face` |
-| Card / RFID device | `POST /set-card` |
+| Card / RFID device (scan) | `POST /capture-card` — device beeps, user taps card |
+| Card / RFID device (manual) | `POST /set-card` — enter card number directly |
 | QR device | `POST /set-card` (QR encodes the card number) |
 | PIN device | `POST /set-pin` |
 
 A user can have multiple credential types stored at once (e.g. finger + card + PIN).
-**Once set, card and PIN are automatically included in every future `enroll` and `sync-device` call — no extra step needed.**
+**Once captured or set, card and PIN are automatically included in every future `enroll` and `sync-device` call — no extra step needed.**
 
 ---
 
@@ -637,7 +638,54 @@ curl http://your-server/api/tenants/101/enrollment-status/enroll-101-10-abcd1234
 
 ### 10.2 Card / QR Credential
 
-Use this for RFID card readers and QR code readers. Both use the same endpoint — QR devices encode the card number as a QR image, the underlying value is the same.
+There are two ways to assign a card credential:
+
+#### 10.2a Card Capture (scan-based — push mode only)
+
+The device beeps and waits for the user to tap their card. The card number is read by the device and sent back automatically — no manual entry needed. **Preferred for RFID enrollment.**
+
+```bash
+curl -X POST http://your-server/api/tenants/101/capture-card \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "card_no": 1,
+    "valid_from": "2026-06-01T00:00:00",
+    "valid_till": "2027-05-31T23:59:59"
+  }'
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Target device (must be push mode) |
+| `card_no` | int | No | Card slot: `1` (default) or `2` |
+| `valid_from` | datetime | No | Access start date |
+| `valid_till` | datetime | No | Access end date |
+
+Response (push mode only):
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-101-10-c1d2e3f4",
+  "message": "User creation queued. Device will beep and wait for card tap on next poll."
+}
+```
+
+Poll the `correlation_id` the same way as fingerprint/face:
+```bash
+curl http://your-server/api/tenants/101/enrollment-status/enroll-101-10-c1d2e3f4 \
+  -H "Authorization: Bearer <access_token>"
+```
+
+Once the user taps the card the device sends the card number back and it is saved automatically.
+
+#### 10.2b Manual Card Entry (`set-card`)
+
+Use when the card number is already known (e.g. printed on the card), or for QR devices (QR encodes the card number as a string).
 
 ```bash
 curl -X POST http://your-server/api/tenants/101/set-card \
@@ -651,7 +699,7 @@ curl -X POST http://your-server/api/tenants/101/set-card \
   }'
 ```
 
-Optional second card (`card2`). `valid_from` / `valid_till` are optional — if supplied they update the tenant's global validity and are sent to the device.
+Optional second card (`card2`). `valid_from` / `valid_till` are optional.
 
 Push mode response:
 ```json
@@ -796,7 +844,8 @@ Recommended UI pages and the APIs they should use:
 - `POST /tenants/{tenant_id}/capture-fingerprint` — finger devices
 - `POST /tenants/{tenant_id}/capture-face` — face devices (ARGO FACE etc.)
 - `POST /tenants/{tenant_id}/extract-face` — pull face template after scan (direct mode)
-- `POST /tenants/{tenant_id}/set-card` — card / RFID / QR devices
+- `POST /tenants/{tenant_id}/capture-card` — card devices, scan-based (push mode, device reads card)
+- `POST /tenants/{tenant_id}/set-card` — card / RFID / QR devices, manual card number entry
 - `POST /tenants/{tenant_id}/set-pin` — PIN devices
 - `POST /tenants/{tenant_id}/enroll` — push all stored credentials to a device
 - `POST /tenants/{tenant_id}/enroll-bulk` — push to multiple devices

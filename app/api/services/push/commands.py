@@ -203,6 +203,7 @@ def push_create_user(
     valid_till: datetime | None = None,
     enroll_finger_index: int | None = None,
     enroll_face_no: int | None = None,
+    enroll_card_no: int | None = None,
     card1: str | None = None,
     card2: str | None = None,
     user_pin: str | None = None,
@@ -258,6 +259,8 @@ def push_create_user(
         params["_enroll_finger_index"] = str(enroll_finger_index)
     if enroll_face_no is not None:
         params["_enroll_face_no"] = str(enroll_face_no)
+    if enroll_card_no is not None:
+        params["_enroll_card_no"] = str(enroll_card_no)
 
     return queue_config(
         db=db,
@@ -437,9 +440,36 @@ def push_enroll_face(
         device_id=device_id,
         cmd_id=CMD.ENROLL_CREDENTIAL,
         params={
-            "cred-type": "6",  # 6=Face for ENROLL
+            "cred-type": "6",  # 6=Face for ENROLL (per COSEC Push API spec)
             "user-id": matrix_user_id,
             "face-no": str(face_no),
+            "format": "1",  # required for face: device sends updatecmd in XML
+        },
+        correlation_id=correlation_id,
+    )
+
+
+def push_enroll_card(
+    db: Session,
+    device_id: int,
+    tenant_id: int,
+    card_no: int = 1,
+    correlation_id: str | None = None,
+) -> DeviceCommand:
+    """Queue cmd-id=1 (ENROLL_CREDENTIAL) with cred-type=1 to trigger card enrollment on device.
+
+    Device enters card-read mode and waits for user to tap card.
+    On success, the callback saves the returned card-1 value to the DB.
+    """
+    matrix_user_id = resolve_matrix_user_id(db, device_id, tenant_id)
+    return queue_command(
+        db=db,
+        device_id=device_id,
+        cmd_id=CMD.ENROLL_CREDENTIAL,
+        params={
+            "cred-type": "1",  # 1=Read Only Card for ENROLL
+            "user-id": matrix_user_id,
+            "card-no": str(card_no),
         },
         correlation_id=correlation_id,
     )
@@ -462,6 +492,7 @@ def push_get_face(
             "cred-type": "4",  # 4=Face for GET/SET/DELETE
             "user-id": matrix_user_id,
             "face-no": str(face_no),
+            "format": "1",  # required for face: device sends updatecmd in XML
         },
         correlation_id=correlation_id,
     )
@@ -489,6 +520,7 @@ def push_set_face(
             "user-id": matrix_user_id,
             "face-no": str(face_no),
             "data-1": template_b64,
+            "format": "1",  # required for face: device sends updatecmd in XML
         },
         correlation_id=correlation_id,
     )

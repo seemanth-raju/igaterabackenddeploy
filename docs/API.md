@@ -469,12 +469,50 @@ Use this when `capture-fingerprint` timed out but the user scanned their finger 
 
 ---
 
+### POST `/tenants/{tenant_id}/capture-card`
+Trigger card enrollment on a push-mode RFID device. The device beeps and enters card-read mode; the user taps their card and the device reports the card number back automatically — no manual entry needed.
+
+**Push mode only.** Returns a `correlation_id` to poll for completion. The card number is saved to the DB once the device sends it back.
+
+**Request**
+```json
+{
+  "device_id": 5,
+  "card_no": 1,
+  "valid_from": "2026-06-01T00:00:00Z",
+  "valid_till": "2027-05-31T23:59:59Z"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Target device (must be push mode) |
+| `card_no` | int | No | Card slot: `1` (default) or `2` |
+| `valid_from` | datetime | No | Access start date — updates tenant global validity |
+| `valid_till` | datetime | No | Access end date — updates tenant global validity and sent to device |
+
+**Response `200`**
+```json
+{
+  "tenant_id": 42,
+  "device_id": 5,
+  "mode": "push",
+  "status": "queued",
+  "correlation_id": "enroll-42-5-c1d2e3f4",
+  "message": "User creation queued. Device will beep and wait for card tap on next poll. Poll GET /api/push/operations/{correlation_id} for status."
+}
+```
+
+**Error `400`** — returned when `device.communication_mode != "push"`. Use `set-card` for direct-mode devices instead.
+
+Poll `GET /tenants/{tenant_id}/enrollment-status/{correlation_id}` for completion — same pattern as `capture-fingerprint` and `capture-face`.
+
+---
+
 ### POST `/tenants/{tenant_id}/set-card`
-Set a card (RFID / QR) credential for a tenant and push it to the device.
+Assign a card (RFID / QR) credential by entering the card number directly. Use this when the card number is already known, or for QR devices (a QR code is just the card number encoded as a QR image).
 
 The card number is stored in the DB and **automatically included** in all future `enroll`, `enroll-bulk`, and `sync-device` calls — no extra step needed.
-
-Works for standard RFID card devices and QR devices (a QR code is just the card number encoded as a QR image; the numeric value is the same).
 
 **Request**
 ```json
@@ -1876,7 +1914,18 @@ GET /devices?skip=0&limit=100
    → Pushes to all target devices
 ```
 
-**Step 2b — Set card / QR credential (card and QR devices):**
+**Step 2b — Card credential (card / RFID devices):**
+
+Option A — scan-based (push mode, preferred for RFID):
+```
+POST /tenants/{tenant_id}/capture-card
+Body: { "device_id": 3, "card_no": 1 }
+→ Device beeps, user taps card, device reads and reports card number automatically
+→ Card is saved to DB and included in all future enroll/sync calls
+→ Push mode only — returns correlation_id to poll
+```
+
+Option B — manual entry (or QR devices):
 ```
 POST /tenants/{tenant_id}/set-card
 Body: { "device_id": 3, "card1": "1234567890" }
@@ -1916,7 +1965,8 @@ Body: { "device_id": 3, "face_no": 1 }
 | Check which devices a tenant is on | `GET /device-mappings?tenant_id={id}` | Show enrolled device list |
 | Read per-device validity dates | `GET /tenants/{id}/device-access` | Show access windows per device |
 | Change dates for one device | `PATCH /tenants/{id}/device-access/{device_id}` | Extend/shorten access on one device |
-| Set / update card credential | `POST /tenants/{id}/set-card` | Assign new card or change card number |
+| Capture card (RFID scan) | `POST /tenants/{id}/capture-card` | Device reads card number automatically (push mode) |
+| Set card manually / QR | `POST /tenants/{id}/set-card` | Assign card number by typing it in |
 | Set / update PIN | `POST /tenants/{id}/set-pin` | Assign or change PIN |
 | Capture face (face devices) | `POST /tenants/{id}/capture-face` | First-time face enrollment on a face device |
 | Extract face template | `POST /tenants/{id}/extract-face` | Pull face template from device after scan |

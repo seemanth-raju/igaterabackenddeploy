@@ -19,6 +19,7 @@ services:
       start_period: 10s
 
   app:
+    build: .
     image: igatera-app:latest
     restart: unless-stopped
     ports:

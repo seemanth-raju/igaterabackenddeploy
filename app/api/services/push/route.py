@@ -189,11 +189,26 @@ def _validate_serial_no(serial_no: str) -> bool:
     return len(clean) == 12 and all(c in "0123456789ABCDEF" for c in clean)
 
 
-async def _get_params(request: Request) -> dict:
-    """Extract params from query string OR POST body (form-urlencoded or plain text).
+def _is_xml_device(params: dict) -> bool:
+    """ARGO FACE (device-type=8) negotiates format=1 at login and expects XML responses."""
+    return params.get("device-type", "") == "8"
 
-    Matrix devices send params as POST body in form-urlencoded format
-    when in Third Party mode.
+
+def _xml_kv_response(pairs: dict) -> Response:
+    """Build a generic <api>key/value</api> XML response (server → device)."""
+    parts = ["<api>"]
+    for k, v in pairs.items():
+        parts.append(f"<{k}>{v}</{k}>")
+    parts.append("</api>")
+    return _xml_response("\n".join(parts))
+
+
+async def _get_params(request: Request) -> dict:
+    """Extract params from query string OR POST body (form-urlencoded, plain text, or XML).
+
+    Matrix devices send params as POST body in form-urlencoded format in Third Party
+    mode.  ARGO FACE devices send updatecmd face data as XML with the structure:
+      <update-cmd><data><data-1>...</data-1></data></update-cmd>
     """
     params = dict(request.query_params)
 
@@ -211,13 +226,30 @@ async def _get_params(request: Request) -> dict:
     except Exception:
         pass
 
-    # Try raw body as text (key=value&key=value)
+    # Try raw body
     try:
         body = await request.body()
         if body:
             body_text = body.decode("utf-8", errors="ignore").strip()
             _log.debug("Push raw body received (%d bytes)", len(body))
-            # Parse as query string format
+
+            # ARGO FACE sends updatecmd face data as XML
+            if body_text.startswith("<?xml") or body_text.startswith("<"):
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(body_text)
+                    for child in root:
+                        if child.tag == "data":
+                            # Face/biometric data nested under <data>
+                            for data_child in child:
+                                params[data_child.tag] = data_child.text or ""
+                        else:
+                            params[child.tag] = child.text or ""
+                    return params
+                except Exception:
+                    pass
+
+            # Parse as query string / form-urlencoded format
             for part in body_text.replace("&", " ").split():
                 if "=" in part:
                     k, v = part.split("=", 1)
@@ -357,10 +389,12 @@ async def device_login(
     else:
         _log.warning("Push login from unknown device: serial-no=%s", serial_no)
 
-    # Respond with poll config — text format (login always uses text)
+    # ARGO FACE (device-type=8) requires format=1 (xml) — without it the device
+    # silently rejects all face credential commands (COSEC Push API spec §4).
+    fmt = 1 if dt_int == 8 else 0
     from app.core.config import settings
     interval = settings.push_api_default_poll_interval
-    return _text_response(f"poll-interval={interval} poll-duration=15 poll-count=5 status=1 format=0")
+    return _text_response(f"poll-interval={interval} poll-duration=15 poll-count=5 status=1 format={fmt}")
 
 
 # ---------------------------------------------------------------------------
@@ -382,15 +416,21 @@ async def device_poll(
     device = _find_device(serial_no, db)
     if not device:
         _log.warning("Push poll from unknown device: serial-no=%s", serial_no)
+        if _is_xml_device(params):
+            return _xml_kv_response({"cmd-avlbl": 0, "cnfg-avlbl": 0, "status": 1})
         return _text_response("cmd-avlbl=0 cnfg-avlbl=0 status=1")
 
     # Authenticate
     auth_error = _authenticate_device(device, params, request)
     if auth_error:
+        if _is_xml_device(params):
+            return _xml_kv_response({"cmd-avlbl": 0, "cnfg-avlbl": 0, "status": 0})
         return _text_response("cmd-avlbl=0 cnfg-avlbl=0 status=0")
 
     # Rate check
     if not _rate_check(serial_no):
+        if _is_xml_device(params):
+            return _xml_kv_response({"cmd-avlbl": 0, "cnfg-avlbl": 0, "status": 1})
         return _text_response("cmd-avlbl=0 cnfg-avlbl=0 status=1")
 
     # Update heartbeat
@@ -418,6 +458,8 @@ async def device_poll(
     db.commit()
 
     _log.debug("Push poll: device=%d cmd_available=%d cfg_available=%d", device.device_id, cmd_available, cfg_available)
+    if _is_xml_device(params):
+        return _xml_kv_response({"cmd-avlbl": cmd_available, "cnfg-avlbl": cfg_available, "status": 1})
     return _text_response(f"cmd-avlbl={cmd_available} cnfg-avlbl={cfg_available} status=1")
 
 
@@ -440,11 +482,15 @@ async def device_get_command(
     device = _find_device(serial_no, db)
     if not device:
         _log.warning("Push getcmd from unknown device: serial-no=%s", serial_no)
+        if _is_xml_device(params):
+            return _xml_kv_response({"status": 0})
         return _text_response("status=0")
 
     # Authenticate
     auth_error = _authenticate_device(device, params, request)
     if auth_error:
+        if _is_xml_device(params):
+            return _xml_kv_response({"status": 0})
         return _text_response("status=0")
 
     # Get the oldest pending command
@@ -457,6 +503,8 @@ async def device_get_command(
 
     if not cmd:
         _log.debug("Push getcmd: device=%d no pending commands", device.device_id)
+        if _is_xml_device(params):
+            return _xml_kv_response({"status": 0})
         return _text_response("status=0")
 
     # Mark as sent
@@ -467,8 +515,9 @@ async def device_get_command(
     _log.info("Push getcmd: device=%d sending command_id=%d cmd_id=%d params=%s",
               device.device_id, cmd.command_id, cmd.cmd_id, _redact_params(cmd.params))
 
-    # Determine format (default text, use device config if available)
-    fmt = "text"  # Default to text format
+    # ARGO FACE (device-type=8) requires XML format for face credential commands.
+    dt_int = int(params.get("device-type", "-1")) if params.get("device-type", "").isdigit() else -1
+    fmt = "xml" if dt_int == 8 else "text"
     return _build_cmd_response(cmd, fmt)
 
 
@@ -494,11 +543,15 @@ async def device_update_command(
     device = _find_device(serial_no, db)
     if not device:
         _log.warning("Push updatecmd from unknown device: serial-no=%s", serial_no)
+        if _is_xml_device(params):
+            return _xml_kv_response({"cmd-avlbl": 0, "status": 1})
         return _text_response("cmd-avlbl=0 status=1")
 
     # Authenticate
     auth_error = _authenticate_device(device, params, request)
     if auth_error:
+        if _is_xml_device(params):
+            return _xml_kv_response({"cmd-avlbl": 0, "status": 0})
         return _text_response("cmd-avlbl=0 status=0")
 
     # Find the most recent sent command for this device with matching cmd-id
@@ -546,6 +599,8 @@ async def device_update_command(
     cmd_available = 1 if next_pending else 0
     db.commit()
 
+    if _is_xml_device(params):
+        return _xml_kv_response({"cmd-avlbl": cmd_available, "status": 1})
     return _text_response(f"cmd-avlbl={cmd_available} status=1")
 
 
@@ -703,11 +758,15 @@ async def device_get_config(
     device = _find_device(serial_no, db)
     if not device:
         _log.warning("Push getconfig from unknown device: serial-no=%s", serial_no)
+        if _is_xml_device(params):
+            return _xml_kv_response({"status": 0})
         return _text_response("status=0")
 
     # Authenticate
     auth_error = _authenticate_device(device, params, request)
     if auth_error:
+        if _is_xml_device(params):
+            return _xml_kv_response({"status": 0})
         return _text_response("status=0")
 
     # Get the oldest pending config
@@ -720,6 +779,8 @@ async def device_get_config(
 
     if not cfg:
         _log.debug("Push getconfig: device=%d no pending configs", device.device_id)
+        if _is_xml_device(params):
+            return _xml_kv_response({"status": 0})
         return _text_response("status=0")
 
     # Mark as sent
@@ -734,6 +795,9 @@ async def device_get_config(
               device.device_id, cfg.config_entry_id, cfg.config_id, _redact_params(device_params))
 
     # Build response: config-id=X param1=val1 param2=val2
+    cfg_dict = {"config-id": cfg.config_id, **device_params}
+    if _is_xml_device(params):
+        return _xml_kv_response(cfg_dict)
     parts = [f"config-id={cfg.config_id}"]
     for k, v in device_params.items():
         parts.append(f"{k}={v}")
@@ -755,11 +819,15 @@ async def device_update_config(
     device = _find_device(serial_no, db)
     if not device:
         _log.warning("Push updateconfig from unknown device: serial-no=%s", serial_no)
+        if _is_xml_device(params):
+            return _xml_kv_response({"cnfg-avlbl": 0, "status": 1})
         return _text_response("cnfg-avlbl=0 status=1")
 
     # Authenticate
     auth_error = _authenticate_device(device, params, request)
     if auth_error:
+        if _is_xml_device(params):
+            return _xml_kv_response({"cnfg-avlbl": 0, "status": 0})
         return _text_response("cnfg-avlbl=0 status=0")
 
     # Find the most recent sent config for this device with matching config-id
@@ -808,6 +876,8 @@ async def device_update_config(
     cfg_available = 1 if next_pending else 0
     db.commit()
 
+    if _is_xml_device(params):
+        return _xml_kv_response({"cnfg-avlbl": cfg_available, "status": 1})
     return _text_response(f"cnfg-avlbl={cfg_available} status=1")
 
 

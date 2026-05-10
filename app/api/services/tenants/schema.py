@@ -201,6 +201,15 @@ class CaptureFaceRequest(BaseModel):
     valid_till: LocalDatetime = Field(default=None)
 
 
+class CaptureCardRequest(BaseModel):
+    """Request body for POST /tenants/{id}/capture-card."""
+
+    device_id: int = Field(..., description="Device where the user will tap their card.")
+    card_no: int = Field(default=1, ge=1, le=2, description="Card slot (1 or 2).")
+    valid_from: LocalDatetime = Field(default=None)
+    valid_till: LocalDatetime = Field(default=None)
+
+
 class ExtractFaceRequest(BaseModel):
     """Request body for POST /tenants/{id}/extract-face."""
 

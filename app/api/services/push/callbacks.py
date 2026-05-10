@@ -249,19 +249,50 @@ def _save_fingerprint_from_b64(
 
 
 def _on_enroll_credential_done(cmd: DeviceCommand, device: Device, db: Session) -> None:
-    """cmd_id=1 (ENROLL_CREDENTIAL) succeeded — biometric scan completed on device.
+    """cmd_id=1 (ENROLL_CREDENTIAL) succeeded — credential enrolled on device.
 
-    cred-type=3 → fingerprint, cred-type=6 → face.
-    Some devices return the template inline as data-1; otherwise queue GET_CREDENTIAL.
+    cred-type=1 → card, cred-type=3 → fingerprint, cred-type=6 → face.
+    For card: device returns card-1 value directly in updatecmd result.
+    For biometrics: some devices return template inline as data-1; otherwise queue GET_CREDENTIAL.
 
     NOTE: ENROLL and GET/SET/DELETE use different cred-type numbering:
-      ENROLL: cred-type 3=Finger, 6=Face
-      GET/SET/DELETE: cred-type 2=Finger, 4=Face
+      ENROLL: cred-type 1=Card, 3=Finger, 6=Face
+      GET/SET/DELETE: cred-type 1=Card, 2=Finger, 4=Face
     """
     params = cmd.params or {}
     result = cmd.result or {}
     user_id = params.get("user-id", "")
     cred_type = params.get("cred-type", "3")
+
+    if cred_type == "1":
+        # Card enrollment — device returns card value directly in updatecmd
+        card_value = result.get("card-1", "")
+        if not card_value:
+            log.warning("ENROLL_CREDENTIAL (card) for user %s on device %d: no card-1 in result %s",
+                        user_id, device.device_id, result)
+            return
+        mapping = _find_mapping_by_user_id(device.device_id, user_id, db)
+        if not mapping:
+            log.warning("ENROLL_CREDENTIAL (card): no mapping for user %s on device %d", user_id, device.device_id)
+            return
+        tenant_id = mapping.tenant_id
+        existing = (
+            db.query(Credential)
+            .filter(Credential.tenant_id == tenant_id, Credential.type == "card", Credential.slot_index == 1)
+            .first()
+        )
+        if existing:
+            existing.raw_value = card_value
+        else:
+            db.add(Credential(tenant_id=tenant_id, type="card", slot_index=1, raw_value=card_value))
+        mapping.is_synced = True
+        mapping.last_sync_at = datetime.now(timezone.utc)
+        existing_resp = mapping.device_response or {}
+        mapping.device_response = {**existing_resp, "card_enrolled": card_value}
+        db.flush()
+        log.info("ENROLL_CREDENTIAL (card) saved card-1=%s for tenant %d on device %d",
+                 card_value, tenant_id, device.device_id)
+        return
 
     is_face = cred_type == "6"
 
@@ -288,6 +319,7 @@ def _on_enroll_credential_done(cmd: DeviceCommand, device: Device, db: Session) 
                 "cred-type": "4",  # GET/SET/DELETE: 4=Face
                 "user-id": user_id,
                 "face-no": face_no,
+                "format": "1",  # required for face: device sends updatecmd in XML
             },
             correlation_id=cmd.correlation_id,
         )
@@ -511,11 +543,28 @@ def _on_user_config_done(cfg: DeviceConfig, device: Device, db: Session) -> None
                 "cred-type": "6",  # ENROLL: 6=Face
                 "user-id": user_id,
                 "face-no": face_no_str,
+                "format": "1",  # required for face: device sends updatecmd in XML
             },
             correlation_id=cfg.correlation_id,
         )
         log.info("User config done — queued ENROLL_CREDENTIAL (face) for user %s face-no %s on device %d",
                  user_id, face_no_str, device.device_id)
+
+    card_no_str = cfg_params.get("_enroll_card_no")
+    if card_no_str and card_no_str.isdigit():
+        queue_command(
+            db=db,
+            device_id=device.device_id,
+            cmd_id=CMD.ENROLL_CREDENTIAL,
+            params={
+                "cred-type": "1",  # ENROLL: 1=Read Only Card
+                "user-id": user_id,
+                "card-no": card_no_str,
+            },
+            correlation_id=cfg.correlation_id,
+        )
+        log.info("User config done — queued ENROLL_CREDENTIAL (card) for user %s card-no %s on device %d",
+                 user_id, card_no_str, device.device_id)
 
 
 def _on_generic_config_done(cfg: DeviceConfig, device: Device, _db: Session) -> None:

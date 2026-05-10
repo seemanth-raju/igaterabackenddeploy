@@ -17,6 +17,10 @@ htmlcov/
 .axon/
 .claude/
 deploy.zip
+deploy/
+graphify-out/
+test/
+docs/
 storage/
 .agent/
 pytesttmp/

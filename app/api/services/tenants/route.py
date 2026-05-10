@@ -16,6 +16,7 @@ from app.api.services.tenants.enrollment import (
     enroll_to_site,
     extract_face_from_device,
     extract_fingerprint_from_device,
+    register_and_capture_card,
     register_and_capture_face,
     register_and_capture_fingerprint,
     set_card_credential,
@@ -28,6 +29,7 @@ from app.api.services.tenants.enrollment import (
 )
 from app.api.services.tenants.schema import (
     BulkEnrollRequest,
+    CaptureCardRequest,
     CaptureFaceRequest,
     CaptureRequest,
     DeviceAccessRead,
@@ -220,7 +222,7 @@ def create_tenant_route(
 def list_tenants_route(
     company_id: UUID | None = Query(default=None),
     skip: int = Query(default=0, ge=0),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=1000),
     search: str | None = Query(default=None),
     group_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -653,6 +655,36 @@ def capture_face_route(
         device_id=payload.device_id,
         db=db,
         face_no=payload.face_no,
+        performed_by=current_user.user_id,
+        valid_from=payload.valid_from,
+        valid_till=payload.valid_till,
+    )
+
+
+@router.post("/{tenant_id}/capture-card")
+def capture_card_route(
+    tenant_id: int,
+    payload: CaptureCardRequest,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """
+    Trigger card enrollment on a push-mode device.
+
+    The device beeps and waits for the user to tap their card. The card number
+    is read by the device and reported back automatically — no manual entry needed.
+
+    Returns a correlation_id. Poll GET /api/push/operations/{correlation_id} for status.
+    `card_no` selects the card slot (1 or 2, default 1).
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+    return register_and_capture_card(
+        tenant_id=tenant_id,
+        device_id=payload.device_id,
+        db=db,
+        card_no=payload.card_no,
         performed_by=current_user.user_id,
         valid_from=payload.valid_from,
         valid_till=payload.valid_till,
