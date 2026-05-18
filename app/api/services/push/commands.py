@@ -275,7 +275,6 @@ def push_enroll_credential(
     db: Session,
     device_id: int,
     tenant_id: int,
-    finger_index: int = 1,
     correlation_id: str | None = None,
 ) -> DeviceCommand:
     """Queue cmd-id=1 (ENROLL_CREDENTIAL) to trigger fingerprint enrollment on device.
@@ -291,7 +290,7 @@ def push_enroll_credential(
         params={
             "cred-type": "3",  # 3=Finger
             "user-id": matrix_user_id,
-            "finger-no": str(finger_index),
+            "finger-no": "1",  # COUNT=1: scan one finger; device assigns next free slot
         },
         correlation_id=correlation_id,
     )

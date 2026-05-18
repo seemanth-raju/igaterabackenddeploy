@@ -325,7 +325,9 @@ def _on_enroll_credential_done(cmd: DeviceCommand, device: Device, db: Session) 
         )
     else:
         # Finger (cred-type=3 for ENROLL)
-        finger_no = params.get("finger-no", "1")
+        # finger-no in ENROLL is a COUNT (spec: "number of fingers to enroll"), always 1.
+        # The updatecmd result's finger-no is the TOTAL enrolled after this scan = new slot index.
+        finger_no = result.get("finger-no") or params.get("finger-no", "1")
         template_b64 = result.get("data-1", "")
         if template_b64:
             log.info("ENROLL_CREDENTIAL (finger) for user %s on device %d returned data-1 inline",
@@ -336,8 +338,8 @@ def _on_enroll_credential_done(cmd: DeviceCommand, device: Device, db: Session) 
             if saved:
                 return
 
-        log.info("ENROLL_CREDENTIAL (finger) done for user %s on device %d — queuing GET_CREDENTIAL",
-                 user_id, device.device_id)
+        log.info("ENROLL_CREDENTIAL (finger) done for user %s on device %d — queuing GET_CREDENTIAL slot %s",
+                 user_id, device.device_id, finger_no)
         from app.api.services.push.commands import CMD, queue_command
         queue_command(
             db=db,
@@ -527,12 +529,12 @@ def _on_user_config_done(cfg: DeviceConfig, device: Device, db: Session) -> None
             params={
                 "cred-type": "3",  # ENROLL: 3=Finger
                 "user-id": user_id,
-                "finger-no": finger_index_str,
+                "finger-no": "1",  # COUNT=1: scan exactly one finger; device assigns next free slot
             },
             correlation_id=cfg.correlation_id,
         )
-        log.info("User config done — queued ENROLL_CREDENTIAL (finger) for user %s finger %s on device %d",
-                 user_id, finger_index_str, device.device_id)
+        log.info("User config done — queued ENROLL_CREDENTIAL (finger) for user %s on device %d",
+                 user_id, device.device_id)
 
     if face_no_str and face_no_str.isdigit():
         queue_command(

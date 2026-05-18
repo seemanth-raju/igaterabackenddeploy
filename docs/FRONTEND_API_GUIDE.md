@@ -806,6 +806,59 @@ Push mode queues a `GET_CREDENTIAL` command and returns a `correlation_id` to po
 
 ---
 
+### 10.6 Delete a Credential
+
+Use this to clear a stored credential before re-enrolling, or to revoke a credential type that is no longer needed (e.g. user lost their card, you want to remove their old fingerprint before re-scanning).
+
+```bash
+curl -X DELETE http://your-server/api/tenants/101/credentials \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "credential_type": "finger"
+  }'
+```
+
+**Body fields:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `device_id` | int | Yes | Device to remove the credential from |
+| `credential_type` | string | Yes | One of: `finger`, `face`, `card`, `palm`, `pin` |
+
+**What it does per credential type:**
+
+| `credential_type` | Device command | DB effect |
+|---|---|---|
+| `finger` | `DELETE_CREDENTIAL` (cred-type=2) queued on device | Removes all stored fingerprint templates for this tenant |
+| `face` | `DELETE_CREDENTIAL` (cred-type=4) queued on device | Removes stored face template for this tenant |
+| `card` | `DELETE_CREDENTIAL` (cred-type=1) queued on device | Removes stored card credential for this tenant |
+| `palm` | `DELETE_CREDENTIAL` (cred-type=3) queued on device | Removes stored palm template for this tenant |
+| `pin` | No device command | Removes PIN from DB — device PIN clears on next sync or re-enroll |
+
+For push-mode devices the device command is processed on the device's next poll. For `pin`, call `sync-device` after to push the updated config without a PIN.
+
+Response:
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "credential_type": "finger",
+  "db_records_deleted": 2,
+  "device_command_queued": true,
+  "message": "Deleted 2 DB record(s) for credential type 'finger'. DELETE_CREDENTIAL queued for device 10 — will process on next poll."
+}
+```
+
+After deletion, call the matching capture/set endpoint to re-enroll the credential:
+- Finger → `POST /tenants/{tenant_id}/capture-fingerprint`
+- Face → `POST /tenants/{tenant_id}/capture-face`
+- Card → `POST /tenants/{tenant_id}/capture-card` or `set-card`
+- PIN → `POST /tenants/{tenant_id}/set-pin`
+
+---
+
 ## 11. Frontend Page Mapping
 
 Recommended UI pages and the APIs they should use:
@@ -850,6 +903,7 @@ Recommended UI pages and the APIs they should use:
 - `POST /tenants/{tenant_id}/enroll` — push all stored credentials to a device
 - `POST /tenants/{tenant_id}/enroll-bulk` — push to multiple devices
 - `POST /tenants/{tenant_id}/enroll-site` — push to all devices in a site
+- `DELETE /tenants/{tenant_id}/credentials` — delete a specific credential type (finger/face/card/palm/pin) before re-enrolling
 - `GET /tenants/{tenant_id}/device-access` — list enrolled devices + access windows
 - `PATCH /tenants/{tenant_id}/device-access/{device_id}` — update validity dates
 

@@ -888,6 +888,74 @@ def unenroll_bulk_route(
 
 
 # ---------------------------------------------------------------------------
+# Credential deletion
+# ---------------------------------------------------------------------------
+
+# Maps frontend credential type name → Push API cred-type value for DELETE_CREDENTIAL
+_CRED_TYPE_MAP: dict[str, str] = {
+    "finger": "2",
+    "card":   "1",
+    "palm":   "3",
+    "face":   "4",
+}
+
+
+@router.delete("/{tenant_id}/credentials")
+def delete_credential_route(
+    tenant_id: int,
+    device_id: int = Body(..., embed=True),
+    credential_type: str = Body(..., embed=True, description="finger, face, card, palm, or pin"),
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """Delete a specific credential type for a tenant on a device.
+
+    For finger / face / card / palm: queues DELETE_CREDENTIAL on the device
+    (push mode — processed on next poll) and removes the stored template from DB.
+
+    For pin: clears from DB only. The device-side PIN is removed on the next
+    sync or re-enroll operation.
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+
+    if credential_type not in (*_CRED_TYPE_MAP, "pin"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid credential_type '{credential_type}'. Must be one of: finger, face, card, palm, pin",
+        )
+
+    queued_device_cmd = False
+    if credential_type in _CRED_TYPE_MAP:
+        from app.api.services.push.commands import push_delete_credential
+        push_delete_credential(db, device_id, tenant_id, cred_type=_CRED_TYPE_MAP[credential_type])
+        queued_device_cmd = True
+
+    db_deleted = (
+        db.query(Credential)
+        .filter(Credential.tenant_id == tenant_id, Credential.type == credential_type)
+        .delete()
+    )
+    db.commit()
+
+    msg = f"Deleted {db_deleted} DB record(s) for credential type '{credential_type}'."
+    if queued_device_cmd:
+        msg += f" DELETE_CREDENTIAL queued for device {device_id} — will process on next poll."
+    else:
+        msg += " PIN will be cleared from the device on next sync or re-enroll."
+
+    return {
+        "tenant_id": tenant_id,
+        "device_id": device_id,
+        "credential_type": credential_type,
+        "db_records_deleted": db_deleted,
+        "device_command_queued": queued_device_cmd,
+        "message": msg,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Push enrollment status
 # ---------------------------------------------------------------------------
 

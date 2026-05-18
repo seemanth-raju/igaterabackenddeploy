@@ -673,8 +673,8 @@ async def device_set_event(
     auth_used = decode_auth_used(detail_3) or meta.auth_used
     direction = decode_direction(detail_3)
 
-    _log.info("Push setevent: device=%d seq=%s evt_id=%s (%s) time=%s detail_1=%s tenant_id=%s auth=%s dir=%s",
-              device.device_id, seq_no, evt_id, meta.description, event_time, detail_1, tenant_id, auth_used, direction)
+    _log.info("Push setevent: device=%d seq=%s evt_id=%s (%s) time=%s detail_1=%s tenant_id=%s auth=%s dir=%s field3_raw=%s",
+              device.device_id, seq_no, evt_id, meta.description, event_time, detail_1, tenant_id, auth_used, direction, detail_3)
 
     event = AccessEvent(
         company_id=device.company_id,
