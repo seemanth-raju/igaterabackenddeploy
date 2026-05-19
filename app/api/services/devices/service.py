@@ -446,6 +446,114 @@ def _upsert_imported_fingerprint(
     return credential, created
 
 
+def _upsert_imported_face(
+    tenant_id: int,
+    face_no: int,
+    template_bytes: bytes,
+    db: Session,
+) -> Credential:
+    storage_path = get_fingerprint_storage_path()
+    file_path = storage_path / f"tenant_{tenant_id}_face_{face_no}.dat"
+    file_path.write_bytes(template_bytes)
+    file_hash = hashlib.sha256(template_bytes).hexdigest()
+
+    credential = (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant_id,
+            Credential.type == "face",
+            Credential.slot_index == face_no,
+        )
+        .first()
+    )
+    if credential is None:
+        credential = Credential(
+            tenant_id=tenant_id,
+            type="face",
+            slot_index=face_no,
+            file_path=str(file_path),
+            file_hash=file_hash,
+            algorithm_version="matrix_v1",
+        )
+        db.add(credential)
+    else:
+        credential.file_path = str(file_path)
+        credential.file_hash = file_hash
+        credential.algorithm_version = "matrix_v1"
+    db.flush()
+    return credential
+
+
+def _upsert_imported_card(tenant_id: int, card_value: str, slot: int, db: Session) -> None:
+    credential = (
+        db.query(Credential)
+        .filter(
+            Credential.tenant_id == tenant_id,
+            Credential.type == "card",
+            Credential.slot_index == slot,
+        )
+        .first()
+    )
+    if credential is None:
+        db.add(Credential(tenant_id=tenant_id, type="card", slot_index=slot, raw_value=card_value))
+    else:
+        credential.raw_value = card_value
+    db.flush()
+
+
+def _upsert_imported_pin(tenant_id: int, pin_value: str, db: Session) -> None:
+    credential = (
+        db.query(Credential)
+        .filter(Credential.tenant_id == tenant_id, Credential.type == "pin")
+        .first()
+    )
+    if credential is None:
+        db.add(Credential(tenant_id=tenant_id, type="pin", slot_index=1, raw_value=pin_value))
+    else:
+        credential.raw_value = pin_value
+    db.flush()
+
+
+def _import_face_for_import(
+    client: MatrixDeviceClient,
+    tenant_id: int,
+    matrix_user_id: str,
+    mapping: DeviceUserMapping,
+    db: Session,
+) -> int:
+    template_bytes = client.get_face_template(matrix_user_id, face_no=1)
+    if not template_bytes:
+        return 0
+    _upsert_imported_face(tenant_id, face_no=1, template_bytes=template_bytes, db=db)
+    mapping.device_response = {
+        **(mapping.device_response or {}),
+        "face_imported": True,
+    }
+    return 1
+
+
+def _import_fingers_from_device(
+    client: MatrixDeviceClient,
+    tenant_id: int,
+    matrix_user_id: str,
+    mapping: DeviceUserMapping,
+    db: Session,
+) -> int:
+    imported = 0
+    for finger_index, template_bytes in client.list_fingerprint_templates(matrix_user_id).items():
+        if not template_bytes:
+            continue
+        _upsert_imported_fingerprint(tenant_id, finger_index, template_bytes, db)
+        imported += 1
+    if imported:
+        mapping.device_response = {
+            **(mapping.device_response or {}),
+            "imported_finger_count": imported,
+            "fingerprint_imported": True,
+        }
+    return imported
+
+
 def _import_fingerprints_for_import(
     client: MatrixDeviceClient,
     tenant_id: int,
@@ -809,9 +917,12 @@ def delete_device(device_id: int, db: Session) -> None:
 def _parse_excel_profiles(excel_bytes: bytes) -> list[dict]:
     """Parse an Excel file into profile dicts compatible with _upsert_tenant_for_import.
 
-    Expected columns (case-insensitive, spaces/dashes → underscores):
-        user_id, full_name, ref_user_id (opt), external_id (opt),
-        is_active (opt, default 1), valid_till (opt, YYYY-MM-DD), user_index (opt)
+    Supports two formats:
+    - Generic:  user_id, full_name, ref_user_id, is_active, valid_till, user_index
+    - Matrix export (User_Configuration.xls):
+        User ID, User Name, Active, Valid Upto (dd-mm-yyyy),
+        Card1, Card2, PIN, Face Recognition
+    All header matching is case-insensitive, spaces/dashes normalised to underscores.
     """
     import io as _io
     from openpyxl import load_workbook
@@ -844,31 +955,47 @@ def _parse_excel_profiles(excel_bytes: bytes) -> list[dict]:
             if i < len(headers) and headers[i]
         }
 
+        # user_id — Matrix column is "User ID" → normalised to "user_id"
         user_id = row_dict.get("user_id", "").strip()
         if not user_id:
             continue
 
-        # Parse optional validity date
-        validity_extras: dict = {}
-        vt = row_dict.get("valid_till", "").strip()
-        if vt and vt not in ("None", "nan", ""):
-            try:
-                dt = datetime.strptime(vt[:10], "%Y-%m-%d")
-                validity_extras = {
-                    "validity_enable": "1",
-                    "validity_date_dd": str(dt.day),
-                    "validity_date_mm": str(dt.month),
-                    "validity_date_yyyy": str(dt.year),
-                }
-            except ValueError:
-                pass
+        # full_name — generic "full_name"/"name" OR Matrix "user_name"
+        full_name = (
+            row_dict.get("full_name")
+            or row_dict.get("name")
+            or row_dict.get("user_name")
+            or user_id
+        ).strip()
 
-        is_active_raw = row_dict.get("is_active", "1").lower()
+        # active — generic "is_active" OR Matrix "active"
+        is_active_raw = (row_dict.get("is_active") or row_dict.get("active") or "1").lower()
         user_active = "0" if is_active_raw in ("0", "false", "no", "inactive") else "1"
 
-        full_name = (
-            row_dict.get("full_name") or row_dict.get("name") or user_id
-        ).strip()
+        # valid_till — generic "valid_till" (YYYY-MM-DD) OR Matrix "valid_upto" (dd-mm-yyyy,
+        # sometimes prefixed with a backtick as an Excel text-escape artefact)
+        validity_extras: dict = {}
+        vt_raw = (row_dict.get("valid_till") or row_dict.get("valid_upto") or "").strip().lstrip("`")
+        if vt_raw and vt_raw not in ("None", "nan"):
+            for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"):
+                try:
+                    dt = datetime.strptime(vt_raw[:10], fmt)
+                    validity_extras = {
+                        "validity_enable": "1",
+                        "validity_date_dd": str(dt.day),
+                        "validity_date_mm": str(dt.month),
+                        "validity_date_yyyy": str(dt.year),
+                    }
+                    break
+                except ValueError:
+                    continue
+
+        # credential fields from Matrix export
+        card1 = row_dict.get("card1", "").strip()
+        card2 = row_dict.get("card2", "").strip()
+        pin   = row_dict.get("pin", "").strip()
+        # "Face Recognition" → "face_recognition" after normalisation
+        has_face = "1" if row_dict.get("face_recognition", "0").strip() == "1" else "0"
 
         profiles.append({
             "user_id": user_id,
@@ -880,6 +1007,10 @@ def _parse_excel_profiles(excel_bytes: bytes) -> list[dict]:
             "validity_date_dd": validity_extras.get("validity_date_dd", ""),
             "validity_date_mm": validity_extras.get("validity_date_mm", ""),
             "validity_date_yyyy": validity_extras.get("validity_date_yyyy", ""),
+            "card1": card1,
+            "card2": card2,
+            "pin": pin,
+            "has_face": has_face,
         })
 
     wb.close()
@@ -909,21 +1040,24 @@ def import_from_upload(
     device_serial: str | None,
     device_vendor: str | None,
     device_model: str | None,
+    device_username: str | None,
+    device_password: str | None,
     db: Session,
 ) -> dict:
-    """Import tenants from an uploaded Excel + fingerprint .dat files.
+    """Import tenants from an uploaded Excel + optional direct device biometric extraction.
 
-    This is the cloud-safe counterpart to import_enrollment_device().
-    The Streamlit extractor runs on the customer's LAN, extracts from the
-    device, then POSTs the data here as a multipart upload.
+    Supports the Matrix User_Configuration.xls export format (28 columns) as well as the
+    generic format (user_id, full_name, is_active, valid_till).
 
-    Excel columns: user_id, full_name, ref_user_id, is_active, valid_till, user_index
-    Fingerprint filenames: {user_id}_finger_{finger_index}.dat
+    Credentials are resolved automatically from the Excel and device:
+      - Card1 / Card2 / PIN  → read directly from Excel columns (no device call)
+      - Face template        → fetched from device when Face Recognition = 1 in Excel
+      - Finger templates     → fetched from device when credentials provided;
+                               falls back to uploaded .dat files if no device connection
     """
     from app.api.services.groups.service import validate_group_selection
 
     _check_company_active(company_id, db)
-    _validate_device_target_or_400(device_ip, None)
     group = validate_group_selection(company_id, group_id, db)
 
     profiles = _parse_excel_profiles(excel_bytes)
@@ -933,12 +1067,29 @@ def import_from_upload(
             detail="Excel file is empty or contains no valid user rows (check that 'user_id' column is present).",
         )
 
-    # Build fingerprint lookup: {user_id: {finger_index: bytes}}
+    # Build fingerprint lookup from uploaded .dat files (fallback if device unreachable)
     fingerprint_map: dict[str, dict[int, bytes]] = {}
     for filename, content in fingerprint_files:
         uid, finger_index = _parse_fingerprint_filename(filename)
         if uid is not None and finger_index is not None and content:
             fingerprint_map.setdefault(uid, {})[finger_index] = content
+
+    # Try to build a direct device client for biometric extraction
+    warnings: list[str] = []
+    client: MatrixDeviceClient | None = None
+    if device_ip and device_username and device_password:
+        client = MatrixDeviceClient(
+            device_ip=device_ip,
+            username=device_username,
+            password=device_password,
+            use_https=False,
+        )
+        if not client.ping():
+            client = None
+            warnings.append(
+                f"Could not reach device at {device_ip} — biometric extraction from device skipped."
+                + (" Finger templates from uploaded .dat files will be used instead." if fingerprint_map else "")
+            )
 
     # Resolve site (required — all tenants get site access)
     site_id_resolved = _resolve_site_id(site_id, company_id, db)
@@ -990,6 +1141,8 @@ def import_from_upload(
     created_mappings = updated_mappings = 0
     created_site_accesses = created_device_accesses = 0
     imported_fingerprint_count = users_with_fingerprints = 0
+    imported_face_count = users_with_faces = 0
+    imported_card_count = imported_pin_count = 0
 
     for profile in profiles:
         tenant, tenant_created = _upsert_tenant_for_import(
@@ -1014,19 +1167,46 @@ def import_from_upload(
             db=db,
         )
 
-        # Store fingerprint templates from uploaded .dat files
         matrix_user_id = mapping.matrix_user_id
-        user_fps = fingerprint_map.get(matrix_user_id, {})
+
+        # Finger templates — device first, fall back to uploaded .dat files
         imported_fingers = 0
-        for finger_index, template_bytes in user_fps.items():
-            _upsert_imported_fingerprint(tenant.tenant_id, finger_index, template_bytes, db)
-            imported_fingers += 1
-        if imported_fingers:
-            mapping.device_response = {
-                **(mapping.device_response or {}),
-                "imported_finger_count": imported_fingers,
-                "fingerprint_imported": True,
-            }
+        if client:
+            imported_fingers = _import_fingers_from_device(
+                client, tenant.tenant_id, matrix_user_id, mapping, db
+            )
+        if not imported_fingers:
+            for finger_index, template_bytes in fingerprint_map.get(matrix_user_id, {}).items():
+                _upsert_imported_fingerprint(tenant.tenant_id, finger_index, template_bytes, db)
+                imported_fingers += 1
+            if imported_fingers:
+                mapping.device_response = {
+                    **(mapping.device_response or {}),
+                    "imported_finger_count": imported_fingers,
+                    "fingerprint_imported": True,
+                }
+
+        # Face template — from device when Excel says Face Recognition = 1
+        imported_faces = 0
+        if client and profile.get("has_face") == "1":
+            imported_faces = _import_face_for_import(
+                client, tenant.tenant_id, matrix_user_id, mapping, db
+            )
+
+        # Card — read directly from Excel (no device call needed)
+        imported_cards = 0
+        if profile.get("card1"):
+            _upsert_imported_card(tenant.tenant_id, profile["card1"], slot=1, db=db)
+            imported_cards += 1
+        if profile.get("card2"):
+            _upsert_imported_card(tenant.tenant_id, profile["card2"], slot=2, db=db)
+            imported_cards += 1
+
+        # PIN — read directly from Excel (no device call needed)
+        imported_pin = 0
+        if profile.get("pin"):
+            _upsert_imported_pin(tenant.tenant_id, profile["pin"], db=db)
+            imported_pin = 1
 
         created_tenants += 1 if tenant_created else 0
         updated_tenants += 0 if tenant_created else 1
@@ -1036,6 +1216,10 @@ def import_from_upload(
         created_device_accesses += 1 if device_access_created else 0
         imported_fingerprint_count += imported_fingers
         users_with_fingerprints += 1 if imported_fingers else 0
+        imported_face_count += imported_faces
+        users_with_faces += 1 if imported_faces else 0
+        imported_card_count += imported_cards
+        imported_pin_count += imported_pin
 
         users.append({
             "tenant_id": tenant.tenant_id,
@@ -1045,6 +1229,9 @@ def import_from_upload(
             "is_active": tenant.is_active,
             "valid_till": mapping.valid_till,
             "finger_count": imported_fingers,
+            "face_count": imported_faces,
+            "card_count": imported_cards,
+            "has_pin": bool(imported_pin),
             "tenant_created": tenant_created,
             "mapping_created": mapping_created,
         })
@@ -1075,6 +1262,10 @@ def import_from_upload(
         "created_site_accesses": created_site_accesses,
         "imported_fingerprint_count": imported_fingerprint_count,
         "users_with_fingerprints": users_with_fingerprints,
-        "warnings": [],
+        "imported_face_count": imported_face_count,
+        "users_with_faces": users_with_faces,
+        "imported_card_count": imported_card_count,
+        "imported_pin_count": imported_pin_count,
+        "warnings": warnings,
         "users": users,
     }

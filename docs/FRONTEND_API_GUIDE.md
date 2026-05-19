@@ -317,6 +317,125 @@ Important:
 
 ---
 
+### Alternative Migration: Excel Upload
+
+Use `POST /api/devices/upload-import` when the client provides a **Matrix User_Configuration Excel export** instead of direct device access. This is the preferred flow when:
+- The client has already exported users from Matrix COSEC software to Excel
+- You want to import card numbers and PINs that are stored in the Excel (no device scan needed for those)
+- The device is on the customer's LAN and you need to extract face/finger templates alongside the Excel data
+
+**Credential resolution is automatic — no credential type selection needed:**
+
+| Credential | Source | Condition |
+|---|---|---|
+| Card 1 / Card 2 | Excel `Card1` / `Card2` columns | Imported when column is non-empty |
+| PIN | Excel `PIN` column | Imported when column is non-empty |
+| Face template | Fetched from device | When Excel `Face Recognition = 1` |
+| Finger templates | Fetched from device | Always attempted; falls back to uploaded `.dat` files |
+
+The endpoint accepts `multipart/form-data`:
+
+```
+POST /api/devices/upload-import
+Content-Type: multipart/form-data
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `group_id` | int | Yes | Group in our DB to place all imported users into |
+| `site_id` | int | Yes | Site the device belongs to |
+| `users_excel` | file | Yes | Matrix `User_Configuration.xls` or generic Excel |
+| `device_ip` | string | No* | Device IP — needed for finger/face extraction |
+| `device_username` | string | No* | Device API username (e.g. `admin`) |
+| `device_password` | string | No* | Device API password |
+| `device_mac` | string | No | MAC address for device deduplication |
+| `device_serial` | string | No | Serial number for device deduplication |
+| `device_vendor` | string | No | e.g. `Matrix` |
+| `device_model` | string | No | e.g. `COSEC ARGO FACE` |
+| `fingerprints` | files | No | Fallback `.dat` files named `{user_id}_finger_{index}.dat` |
+| `company_id` | UUID | No | Super-admin only |
+
+\* `device_ip`, `device_username`, `device_password` are optional — if omitted (or if device is unreachable), only card/PIN from Excel are imported and a warning is returned.
+
+Example request:
+
+```bash
+curl -X POST http://your-server/api/devices/upload-import \
+  -H "Authorization: Bearer <access_token>" \
+  -F "group_id=8" \
+  -F "site_id=1" \
+  -F "device_ip=192.168.1.201" \
+  -F "device_username=admin" \
+  -F "device_password=12345" \
+  -F "device_vendor=Matrix" \
+  -F "device_model=COSEC ARGO FACE" \
+  -F "users_excel=@User_Configuration.xls"
+```
+
+Example response:
+
+```json
+{
+  "device": { "device_id": 10, "ip_address": "192.168.1.201", "..." : "..." },
+  "device_created": true,
+  "group": { "group_id": 8, "name": "Employees" },
+  "reported_user_count": 553,
+  "imported_user_count": 553,
+  "created_tenants": 553,
+  "updated_tenants": 0,
+  "created_mappings": 553,
+  "updated_mappings": 0,
+  "imported_fingerprint_count": 420,
+  "users_with_fingerprints": 410,
+  "imported_face_count": 85,
+  "users_with_faces": 85,
+  "imported_card_count": 12,
+  "imported_pin_count": 0,
+  "warnings": [],
+  "users": [
+    {
+      "tenant_id": 101,
+      "matrix_user_id": "01110401",
+      "external_id": "01110401",
+      "full_name": "Gaurav",
+      "is_active": true,
+      "valid_till": "2037-12-31T00:00:00Z",
+      "finger_count": 1,
+      "face_count": 0,
+      "card_count": 0,
+      "has_pin": false,
+      "tenant_created": true,
+      "mapping_created": true
+    }
+  ]
+}
+```
+
+**Excel column mapping (Matrix User_Configuration format):**
+
+| Excel column | Maps to |
+|---|---|
+| `User ID` | tenant `external_id` and device `matrix_user_id` |
+| `User Name` | tenant `full_name` |
+| `Active` | tenant `is_active` (`1` = active) |
+| `Valid Upto` | tenant `global_access_till` (parsed as `dd-mm-yyyy`) |
+| `Card1` | `Credential` type=card slot=1 |
+| `Card2` | `Credential` type=card slot=2 |
+| `PIN` | `Credential` type=pin |
+| `Face Recognition` | triggers face template fetch from device when `= 1` |
+
+The generic format (`user_id`, `full_name`, `is_active`, `valid_till`) is still accepted for backwards compatibility.
+
+**Recommended UI sequence:**
+1. Admin opens Data Migration page and selects the target group.
+2. Admin uploads the Excel file.
+3. Admin optionally fills in device IP / username / password (show these only if finger or face extraction is wanted).
+4. Frontend calls `POST /devices/upload-import`.
+5. On success, show imported counts broken down by credential type (`finger`, `face`, `card`, `pin`).
+6. Show any `warnings` prominently (e.g. device unreachable, biometric extraction skipped).
+
+---
+
 ## 4. What To Show After Migration
 
 After the migration step, the frontend should switch back to normal CRUD pages.
@@ -872,7 +991,8 @@ Recommended UI pages and the APIs they should use:
 - `POST /auth/change-password`
 
 ### Data Migration Page
-- `POST /devices/import-enrollment`
+- `POST /devices/import-enrollment` — direct device migration (connects to device, pulls all users + biometrics)
+- `POST /devices/upload-import` — Excel-based migration (Matrix User_Configuration.xls + optional device for biometrics)
 
 ### Devices Page
 - `GET /devices`

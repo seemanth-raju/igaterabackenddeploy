@@ -130,27 +130,31 @@ async def upload_import_device_route(
     group_id: int = Form(..., description="Group ID to place all imported tenants into"),
     site_id: int = Form(..., description="Site the device belongs to — all tenants get site access"),
     company_id: UUID | None = Form(default=None, description="Super-admin only — target company UUID"),
-    device_ip: str | None = Form(default=None),
+    device_ip: str | None = Form(default=None, description="Device IP — required to extract finger/face templates"),
+    device_username: str | None = Form(default=None, description="Device API username (e.g. admin)"),
+    device_password: str | None = Form(default=None, description="Device API password"),
     device_mac: str | None = Form(default=None, description="Device MAC address (used for deduplication)"),
     device_serial: str | None = Form(default=None),
     device_vendor: str | None = Form(default=None),
     device_model: str | None = Form(default=None),
-    users_excel: UploadFile = File(..., description="Excel (.xlsx) with columns: user_id, full_name, ref_user_id, is_active, valid_till"),
-    fingerprints: list[UploadFile] = File(default=[], description="Fingerprint template files named {user_id}_finger_{index}.dat"),
+    users_excel: UploadFile = File(..., description="Matrix User_Configuration.xls or generic Excel with user_id/full_name columns"),
+    fingerprints: list[UploadFile] = File(default=[], description="Optional fallback: fingerprint .dat files named {user_id}_finger_{index}.dat"),
     db: Session = Depends(get_db),
     current_user: AppUser | None = Depends(get_current_user_optional),
 ) -> DeviceImportResponse:
-    """Upload-based migration — cloud-safe alternative to /import-enrollment.
+    """Upload-based migration — import users from a Matrix User_Configuration Excel export.
 
-    Use this when your backend is in the cloud and cannot reach the device directly.
-    The Streamlit extractor app runs on the customer's local network, extracts users
-    and fingerprint templates from the device, then uploads them here.
+    Credentials are resolved automatically from the Excel and device:
+    - **Card / PIN** — read directly from Excel columns Card1, Card2, PIN (no device needed)
+    - **Face templates** — fetched from device for rows where Face Recognition = 1
+    - **Finger templates** — fetched from device; falls back to uploaded .dat files if unavailable
 
-    **Excel format** (first row = headers):
-    | user_id | full_name | ref_user_id | is_active | valid_till | user_index |
+    Supply `device_ip`, `device_username`, and `device_password` to enable biometric extraction.
+    If the device cannot be reached, a warning is returned and only card/PIN/uploaded .dat files are imported.
 
-    **Fingerprint files:** binary `.dat` files named `{user_id}_finger_{finger_index}.dat`
-    (e.g. `42_finger_1.dat`). Pass multiple files under the `fingerprints` field.
+    **Excel formats accepted:**
+    - Matrix export: User ID, User Name, Active, Valid Upto, Card1, Card2, PIN, Face Recognition, …
+    - Generic:       user_id, full_name, is_active, valid_till
     """
     comp_id = resolve_upload_import_company_id(company_id, current_user, db)
 
@@ -167,6 +171,8 @@ async def upload_import_device_route(
         excel_bytes=excel_bytes,
         fingerprint_files=fp_files,
         device_ip=device_ip,
+        device_username=device_username,
+        device_password=device_password,
         device_mac=device_mac,
         device_serial=device_serial,
         device_vendor=device_vendor,
