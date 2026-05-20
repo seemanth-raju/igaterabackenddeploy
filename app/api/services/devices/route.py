@@ -169,6 +169,7 @@ async def upload_import_device_route(
         site_id=site_id,
         company_id=comp_id,
         excel_bytes=excel_bytes,
+        excel_filename=users_excel.filename or "",
         fingerprint_files=fp_files,
         device_ip=device_ip,
         device_username=device_username,

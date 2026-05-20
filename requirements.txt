@@ -16,6 +16,7 @@ h11==0.16.0
 httptools==0.7.1
 idna==3.11
 openpyxl==3.1.5
+xlrd==2.0.1
 
 passlib==1.7.4
 pdfminer.six==20260107

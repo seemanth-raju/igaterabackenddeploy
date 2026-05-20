@@ -13,7 +13,7 @@ services:
     build: ./streamlit_extractor
     restart: unless-stopped
     ports:
-      - "${EXTRACTOR_PORT:-8501}:8501"
+      - "${EXTRACTOR_PORT:-5000}:5000"
 
 volumes:
   fingerprint_storage:

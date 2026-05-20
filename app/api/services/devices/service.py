@@ -914,7 +914,7 @@ def delete_device(device_id: int, db: Session) -> None:
 # Upload-based import (used by Streamlit extractor running on the local LAN)
 # ---------------------------------------------------------------------------
 
-def _parse_excel_profiles(excel_bytes: bytes) -> list[dict]:
+def _parse_excel_profiles(excel_bytes: bytes, filename: str = "") -> list[dict]:
     """Parse an Excel file into profile dicts compatible with _upsert_tenant_for_import.
 
     Supports two formats:
@@ -923,23 +923,34 @@ def _parse_excel_profiles(excel_bytes: bytes) -> list[dict]:
         User ID, User Name, Active, Valid Upto (dd-mm-yyyy),
         Card1, Card2, PIN, Face Recognition
     All header matching is case-insensitive, spaces/dashes normalised to underscores.
+    Supports both .xls (xlrd) and .xlsx (openpyxl).
     """
     import io as _io
-    from openpyxl import load_workbook
+
+    is_xls = filename.lower().endswith(".xls") and not filename.lower().endswith(".xlsx")
 
     try:
-        wb = load_workbook(_io.BytesIO(excel_bytes), read_only=True, data_only=True)
+        if is_xls:
+            import xlrd
+            wb_xls = xlrd.open_workbook(file_contents=excel_bytes)
+            ws_xls = wb_xls.sheet_by_index(0)
+            all_rows: list = [ws_xls.row_values(i) for i in range(ws_xls.nrows)]
+        else:
+            from openpyxl import load_workbook
+            wb = load_workbook(_io.BytesIO(excel_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            all_rows = list(ws.iter_rows(values_only=True))
+            wb.close()
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot parse Excel file: {exc}",
         ) from exc
 
-    ws = wb.active
     headers: list[str] = []
     profiles: list[dict] = []
 
-    for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
+    for row_idx, row in enumerate(all_rows):
         if row_idx == 0:
             headers = [
                 str(c).strip().lower().replace(" ", "_").replace("-", "_") if c else ""
@@ -1034,6 +1045,7 @@ def import_from_upload(
     site_id: int,
     company_id: UUID,
     excel_bytes: bytes,
+    excel_filename: str,
     fingerprint_files: list[tuple[str, bytes]],
     device_ip: str | None,
     device_mac: str | None,
@@ -1060,7 +1072,7 @@ def import_from_upload(
     _check_company_active(company_id, db)
     group = validate_group_selection(company_id, group_id, db)
 
-    profiles = _parse_excel_profiles(excel_bytes)
+    profiles = _parse_excel_profiles(excel_bytes, filename=excel_filename)
     if not profiles:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -204,20 +204,39 @@ def fetch_groups(backend_api: str, token: str | None) -> list[dict]:
     return []
 
 
-def _parse_excel_preview(excel_bytes: bytes) -> dict:
-    """Return a quick summary of the Excel without full parsing."""
+def _parse_excel_preview(excel_bytes: bytes, filename: str = "") -> dict:
+    """Return a quick summary of the Excel without full parsing.
+
+    Supports both .xls (xlrd) and .xlsx (openpyxl).
+    """
     import io as _io
+
+    def _normalize(v):
+        return str(v).strip().lower().replace(" ", "_").replace("-", "_") if v is not None else ""
+
     try:
-        wb = openpyxl.load_workbook(_io.BytesIO(excel_bytes), read_only=True, data_only=True)
-        ws = wb.active
+        is_xls = filename.lower().endswith(".xls") and not filename.lower().endswith(".xlsx")
+
+        if is_xls:
+            import xlrd
+            wb = xlrd.open_workbook(file_contents=excel_bytes)
+            ws = wb.sheet_by_index(0)
+            all_rows = [ws.row_values(i) for i in range(ws.nrows)]
+        else:
+            wb = openpyxl.load_workbook(_io.BytesIO(excel_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            all_rows = list(ws.iter_rows(values_only=True))
+            wb.close()
+
         headers = []
         rows = 0
         card_count = face_count = pin_count = 0
-        for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
+
+        for row_idx, row in enumerate(all_rows):
             if row_idx == 0:
-                headers = [str(c).strip().lower().replace(" ", "_") if c else "" for c in row]
+                headers = [_normalize(c) for c in row]
                 continue
-            if not any(row):
+            if not any(v for v in row if v is not None and str(v).strip()):
                 continue
             row_dict = {headers[i]: (str(v).strip() if v is not None else "")
                         for i, v in enumerate(row) if i < len(headers) and headers[i]}
@@ -228,7 +247,7 @@ def _parse_excel_preview(excel_bytes: bytes) -> dict:
                 pin_count += 1
             if row_dict.get("face_recognition", "0").strip() == "1":
                 face_count += 1
-        wb.close()
+
         return {"rows": rows, "card_count": card_count,
                 "pin_count": pin_count, "face_count": face_count,
                 "has_matrix_format": "user_name" in headers or "face_recognition" in headers}
@@ -533,7 +552,7 @@ with tab_excel:
     if uploaded_file is not None:
         excel_bytes = uploaded_file.read()
         with st.spinner("Parsing Excel..."):
-            preview = _parse_excel_preview(excel_bytes)
+            preview = _parse_excel_preview(excel_bytes, filename=uploaded_file.name)
         st.session_state["xl_preview"] = {"bytes": excel_bytes, "stats": preview,
                                           "filename": uploaded_file.name}
 
