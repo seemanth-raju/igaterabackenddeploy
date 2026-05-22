@@ -808,6 +808,46 @@ class MatrixDeviceClient:
         return {"status_code": response.status_code, "response": response.text, "success": success}
 
     # ------------------------------------------------------------------
+    # Card credentials (direct-mode only)
+    # ------------------------------------------------------------------
+
+    def trigger_card_enrollment(self, user_id: str, card_no: int = 1) -> dict:
+        """Put the device into card enrollment mode for this user.
+
+        The device beeps and waits for the user to tap their card.
+        After the user taps, call extract_card_from_user() to retrieve the number.
+        """
+        response = requests.get(
+            f"{self.base_url}/enrolluser",
+            params={
+                "action": "enroll",
+                "type": "1",        # 1 = Card
+                "user-id": str(user_id),
+                "card-no": str(card_no),
+                "format": "xml",
+            },
+            auth=self.auth,
+            timeout=self.timeout,
+            verify=self.verify_tls,
+        )
+        success = self._is_success(response)
+        return {"status_code": response.status_code, "response": response.text, "success": success}
+
+    def extract_card_from_user(self, user_id: str, card_no: int = 1) -> str | None:
+        """Read the card number from the device user profile.
+
+        Returns the card value (card1 or card2) if the user has one registered,
+        None otherwise.  Call this after trigger_card_enrollment() and the user
+        has tapped their card.
+        """
+        profile = self.get_user_by_id(user_id)
+        if not profile:
+            return None
+        key = f"card{card_no}"
+        value = profile.get(key, "").strip()
+        return value or None
+
+    # ------------------------------------------------------------------
     # Face credentials (ARGO FACE and similar face-recognition devices)
     # ------------------------------------------------------------------
     # Direct API type values differ from push cred-type values.

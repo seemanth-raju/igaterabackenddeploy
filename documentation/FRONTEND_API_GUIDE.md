@@ -256,6 +256,7 @@ Example response:
   "imported_user_count": 2,
   "created_tenants": 2,
   "updated_tenants": 0,
+  "skipped_users": 0,
   "created_mappings": 2,
   "updated_mappings": 0,
   "created_device_accesses": 2,
@@ -272,8 +273,12 @@ Example response:
       "is_active": true,
       "valid_till": "2026-05-28T23:59:59Z",
       "finger_count": 1,
+      "face_count": 0,
+      "card_count": 0,
+      "has_pin": false,
       "tenant_created": true,
-      "mapping_created": true
+      "mapping_created": true,
+      "tenant_skipped": false
     },
     {
       "tenant_id": 102,
@@ -283,8 +288,12 @@ Example response:
       "is_active": true,
       "valid_till": "2026-07-08T23:59:59Z",
       "finger_count": 1,
+      "face_count": 0,
+      "card_count": 0,
+      "has_pin": false,
       "tenant_created": true,
-      "mapping_created": true
+      "mapping_created": true,
+      "tenant_skipped": false
     }
   ]
 }
@@ -345,6 +354,7 @@ Content-Type: multipart/form-data
 | `group_id` | int | Yes | Group in our DB to place all imported users into |
 | `site_id` | int | Yes | Site the device belongs to |
 | `users_excel` | file | Yes | Matrix `User_Configuration.xls` or generic Excel |
+| `on_duplicate` | string | No | What to do when a user already exists (see below). Default: `replace_if_changed` |
 | `device_ip` | string | No* | Device IP — needed for finger/face extraction |
 | `device_username` | string | No* | Device API username (e.g. `admin`) |
 | `device_password` | string | No* | Device API password |
@@ -357,6 +367,16 @@ Content-Type: multipart/form-data
 
 \* `device_ip`, `device_username`, `device_password` are optional — if omitted (or if device is unreachable), only card/PIN from Excel are imported and a warning is returned.
 
+#### `on_duplicate` values
+
+| Value | Behaviour |
+|---|---|
+| `replace_if_changed` | **(default)** Update name, active status, and validity only when at least one of those fields differs from what is already stored. If nothing changed the user is counted as skipped. Biometrics and access records are still updated regardless. |
+| `skip` | Leave every existing user completely untouched — no profile update, no biometric import, no access record changes. Only new users (not yet in the DB) are processed. |
+| `replace` | Always overwrite all profile fields even if nothing changed. Previous behaviour before this feature was added. |
+
+Show `on_duplicate` as a radio/select on the migration UI. The recommended default is `replace_if_changed`.
+
 Example request:
 
 ```bash
@@ -364,6 +384,7 @@ curl -X POST http://your-server/api/devices/upload-import \
   -H "Authorization: Bearer <access_token>" \
   -F "group_id=8" \
   -F "site_id=1" \
+  -F "on_duplicate=replace_if_changed" \
   -F "device_ip=192.168.1.201" \
   -F "device_username=admin" \
   -F "device_password=12345" \
@@ -377,14 +398,15 @@ Example response:
 ```json
 {
   "device": { "device_id": 10, "ip_address": "192.168.1.201", "..." : "..." },
-  "device_created": true,
+  "device_created": false,
   "group": { "group_id": 8, "name": "Employees" },
   "reported_user_count": 553,
   "imported_user_count": 553,
-  "created_tenants": 553,
-  "updated_tenants": 0,
-  "created_mappings": 553,
-  "updated_mappings": 0,
+  "created_tenants": 3,
+  "updated_tenants": 10,
+  "skipped_users": 540,
+  "created_mappings": 3,
+  "updated_mappings": 550,
   "imported_fingerprint_count": 420,
   "users_with_fingerprints": 410,
   "imported_face_count": 85,
@@ -405,11 +427,45 @@ Example response:
       "card_count": 0,
       "has_pin": false,
       "tenant_created": true,
-      "mapping_created": true
+      "mapping_created": true,
+      "tenant_skipped": false
+    },
+    {
+      "tenant_id": 85,
+      "matrix_user_id": "01110210",
+      "external_id": "01110210",
+      "full_name": "Priya",
+      "is_active": true,
+      "valid_till": null,
+      "finger_count": 0,
+      "face_count": 0,
+      "card_count": 0,
+      "has_pin": false,
+      "tenant_created": false,
+      "mapping_created": false,
+      "tenant_skipped": true
     }
   ]
 }
 ```
+
+**New response fields:**
+
+| Field | Description |
+|---|---|
+| `skipped_users` | Number of existing users whose profile was not updated (either `skip` mode, or `replace_if_changed` with no detected changes). |
+| `imported_face_count` | Total face templates imported from the device. |
+| `imported_card_count` | Total card credentials read from the Excel. |
+| `imported_pin_count` | Total PIN credentials read from the Excel. |
+| `users[].face_count` | Face templates imported for this user. |
+| `users[].card_count` | Card credentials imported for this user. |
+| `users[].has_pin` | Whether a PIN was imported for this user. |
+| `users[].tenant_skipped` | `true` if this user already existed and was not updated. |
+
+**Recommended UI for `skipped_users`:**
+Show a summary row after import like:
+
+> ✅ 3 created · 10 updated · 540 unchanged (skipped) · 420 fingerprints stored
 
 **Excel column mapping (Matrix User_Configuration format):**
 
@@ -665,6 +721,34 @@ curl -X POST http://your-server/api/devices/22/ping \
   -H "Authorization: Bearer <access_token>"
 ```
 
+### Sync All Tenants To A Device
+
+Use this when you add a replacement device or a new device that should receive all users already enrolled on another device. Instead of re-enrolling each tenant one by one, a single call pushes everyone.
+
+```bash
+curl -X POST http://your-server/api/devices/22/sync-tenants \
+  -H "Authorization: Bearer <access_token>"
+```
+
+Response:
+```json
+{
+  "device_id": 22,
+  "total": 120,
+  "succeeded": 119,
+  "failed": 1,
+  "results": [
+    { "tenant_id": 101, "matrix_user_id": "EMP001", "success": true, "correlation_id": "enroll-101-22-abcd1234", "mode": "push" },
+    { "tenant_id": 85,  "matrix_user_id": "EMP085", "success": false, "error": "Tenant 85 has no external_id." }
+  ],
+  "message": "Sync complete: 119/120 tenant(s) queued/pushed successfully. 1 failed — see results for details."
+}
+```
+
+- For **push-mode** devices: each tenant gets a `correlation_id` you can poll via `GET /api/push/operations/{correlation_id}`.
+- For **direct-mode** devices: sync is synchronous — check each `success` field in `results`.
+- Only tenants that already have a `DeviceUserMapping` for this device are synced. If `total: 0` is returned, enroll tenants first.
+
 ---
 
 ## 9. Create Or Update Tenants Manually
@@ -675,11 +759,14 @@ You can still create tenants manually from the frontend.
 
 ### Create Tenant
 
+`external_id` is **required** — it is the employee/badge number used as the user-id on every device. Must be unique per company.
+
 ```bash
 curl -X POST http://your-server/api/tenants \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
   -d '{
+    "external_id": "EMP001",
     "full_name": "John Doe",
     "email": "john@example.com",
     "phone": "+91-9999999999",
@@ -687,6 +774,8 @@ curl -X POST http://your-server/api/tenants \
     "group_id": 8
   }'
 ```
+
+Omitting `external_id` returns `422 Unprocessable Entity`. The backend uses this value as the Matrix device user-id — it must match the badge/employee number the device knows.
 
 ### Update Tenant
 
@@ -700,6 +789,8 @@ curl -X PATCH http://your-server/api/tenants/101 \
     "is_active": true
   }'
 ```
+
+**Changing `external_id`:** If you update `external_id`, the backend automatically cascades the new value to all `DeviceUserMapping` rows for this tenant and marks them as `is_synced=false`. The devices will receive the updated user-id on the next sync. Call `PUT /tenants/{tenant_id}/sync-devices` after changing `external_id` to push the change immediately.
 
 ### Delete Tenant
 
@@ -759,9 +850,11 @@ curl http://your-server/api/tenants/101/enrollment-status/enroll-101-10-abcd1234
 
 There are two ways to assign a card credential:
 
-#### 10.2a Card Capture (scan-based — push mode only)
+#### 10.2a Card Capture (scan-based — push and direct mode)
 
-The device beeps and waits for the user to tap their card. The card number is read by the device and sent back automatically — no manual entry needed. **Preferred for RFID enrollment.**
+The device beeps and waits for the user to tap their card. The card number is read by the device automatically — no manual entry needed. **Preferred for RFID enrollment.**
+
+Works for both **push-mode** and **direct-mode** devices.
 
 ```bash
 curl -X POST http://your-server/api/tenants/101/capture-card \
@@ -777,12 +870,12 @@ curl -X POST http://your-server/api/tenants/101/capture-card \
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `device_id` | int | Yes | Target device (must be push mode) |
+| `device_id` | int | Yes | Target device (push or direct mode) |
 | `card_no` | int | No | Card slot: `1` (default) or `2` |
 | `valid_from` | datetime | No | Access start date |
 | `valid_till` | datetime | No | Access end date |
 
-Response (push mode only):
+**Push-mode response** — card is saved automatically when the user taps:
 ```json
 {
   "tenant_id": 101,
@@ -800,9 +893,53 @@ curl http://your-server/api/tenants/101/enrollment-status/enroll-101-10-c1d2e3f4
   -H "Authorization: Bearer <access_token>"
 ```
 
-Once the user taps the card the device sends the card number back and it is saved automatically.
+**Direct-mode response** — device enters card scan mode, then call `extract-card` to retrieve the number:
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "mode": "direct",
+  "card_no": 1,
+  "status": "enrollment_triggered",
+  "enrollment_triggered": true,
+  "message": "User created and card enrollment mode triggered (slot 1). Have the user tap their card at the device reader, then call POST /tenants/{tenant_id}/extract-card to store the card number."
+}
+```
 
-#### 10.2b Manual Card Entry (`set-card`)
+For direct mode, after the user taps their card call `POST /tenants/{tenant_id}/extract-card` (see section 10.2c below).
+
+#### 10.2b Extract Card (direct mode only)
+
+After calling `capture-card` on a direct-mode device and the user has tapped their card, call this to read the card number from the device and store it in the DB.
+
+Not needed for push-mode devices — the card is saved automatically via the callback.
+
+```bash
+curl -X POST http://your-server/api/tenants/101/extract-card \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "device_id": 10,
+    "card_no": 1
+  }'
+```
+
+Response:
+```json
+{
+  "tenant_id": 101,
+  "device_id": 10,
+  "mode": "direct",
+  "status": "success",
+  "card_no": 1,
+  "card_value": "1234567890",
+  "message": "Card number extracted from device (slot 1) and stored."
+}
+```
+
+Returns `404` if the user hasn't tapped their card yet.
+
+#### 10.2c Manual Card Entry (`set-card`)
 
 Use when the card number is already known (e.g. printed on the card), or for QR devices (QR encodes the card number as a string).
 
@@ -982,6 +1119,29 @@ After deletion, call the matching capture/set endpoint to re-enroll the credenti
 
 Recommended UI pages and the APIs they should use:
 
+### Dashboard Page
+- `GET /dashboard` — single call returns all summary stats and chart data
+
+Response fields map directly to UI elements:
+
+| UI element | Field |
+|---|---|
+| TOTAL USERS card | `total_users` |
+| ACTIVE LOCATIONS card | `active_locations` |
+| CONNECTED DEVICES card | `connected_devices` |
+| TOTAL GROUPS card | `total_groups` |
+| Members per Group bar chart | `members_per_group[]` — `group_name` (x-axis), `member_count` (y-axis) |
+| Enrollment Status donut | `enrollment_status.enrolled` (green) + `enrollment_status.no_biometrics` (orange) |
+| Users by Type donut | `users_by_type[]` — one slice per `tenant_type` |
+
+Example call:
+```bash
+curl http://your-server/api/dashboard \
+  -H "Authorization: Bearer <access_token>"
+```
+
+---
+
 ### Login Page
 - `POST /auth/login`
 - `POST /auth/refresh`
@@ -999,6 +1159,7 @@ Recommended UI pages and the APIs they should use:
 - `POST /devices`
 - `PATCH /devices/{device_id}`
 - `POST /devices/{device_id}/ping`
+- `POST /devices/{device_id}/sync-tenants` — bulk re-push all enrolled users to this device (use for new/replacement devices)
 
 ### Groups / Designations Page
 - `GET /groups`
@@ -1017,7 +1178,8 @@ Recommended UI pages and the APIs they should use:
 - `POST /tenants/{tenant_id}/capture-fingerprint` — finger devices
 - `POST /tenants/{tenant_id}/capture-face` — face devices (ARGO FACE etc.)
 - `POST /tenants/{tenant_id}/extract-face` — pull face template after scan (direct mode)
-- `POST /tenants/{tenant_id}/capture-card` — card devices, scan-based (push mode, device reads card)
+- `POST /tenants/{tenant_id}/capture-card` — card devices, scan-based (**push and direct mode**, device reads card)
+- `POST /tenants/{tenant_id}/extract-card` — read card number after user tapped (direct mode only)
 - `POST /tenants/{tenant_id}/set-card` — card / RFID / QR devices, manual card number entry
 - `POST /tenants/{tenant_id}/set-pin` — PIN devices
 - `POST /tenants/{tenant_id}/enroll` — push all stored credentials to a device
@@ -1121,6 +1283,9 @@ This matches the business flow:
 
 ## 14. Quick Reference
 
+### Dashboard
+- `GET /dashboard` — all stats and chart data in one call
+
 ### Authentication
 - `POST /auth/login`
 - `POST /auth/refresh`
@@ -1136,8 +1301,10 @@ This matches the business flow:
 ### Credential enrollment
 - `POST /tenants/{tenant_id}/capture-fingerprint` — finger scan (all standard devices)
 - `POST /tenants/{tenant_id}/capture-face` — face scan (ARGO FACE etc.)
-- `POST /tenants/{tenant_id}/extract-face` — pull face template after scan
-- `POST /tenants/{tenant_id}/set-card` — RFID card or QR code value
+- `POST /tenants/{tenant_id}/extract-face` — pull face template after scan (direct mode)
+- `POST /tenants/{tenant_id}/capture-card` — scan-based card enrollment (push + direct mode)
+- `POST /tenants/{tenant_id}/extract-card` — read card number after tap (direct mode only)
+- `POST /tenants/{tenant_id}/set-card` — RFID card or QR code value (manual entry)
 - `POST /tenants/{tenant_id}/set-pin` — 4–8 digit PIN
 
 ### Device push / sync
@@ -1145,7 +1312,7 @@ This matches the business flow:
 - `POST /tenants/{tenant_id}/enroll-bulk` — push to multiple devices
 - `POST /tenants/{tenant_id}/enroll-site` — push to all devices in a site
 - `PUT /tenants/{tenant_id}/sync-device` — re-sync one device after edits
-- `PUT /tenants/{tenant_id}/sync-devices` — re-sync multiple devices
+- `PUT /tenants/{tenant_id}/sync-devices` — re-sync multiple devices after `external_id` change
 - `GET /tenants/{tenant_id}/enrollment-status/{correlation_id}` — poll push-mode result
 
 ### Access windows
@@ -1156,8 +1323,9 @@ This matches the business flow:
 - `GET /groups` / `POST /groups` / `PATCH /groups/{group_id}`
 - `POST /groups/{group_id}/members/{tenant_id}`
 - `GET /devices` / `POST /devices` / `POST /devices/{device_id}/ping`
+- `POST /devices/{device_id}/sync-tenants` — bulk push all enrolled users to a device
 - `POST /devices/import-enrollment`
 
 ---
 
-Last updated: 2026-05-08
+Last updated: 2026-05-22 (added: dashboard endpoint, external_id required on create, extract-card endpoint, capture-card direct mode, sync-tenants device endpoint, external_id cascade on update)

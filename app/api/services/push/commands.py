@@ -16,6 +16,7 @@ import logging
 from datetime import datetime
 from enum import IntEnum
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from database.models import DeviceCommand, DeviceConfig, DeviceUserMapping, Tenant
@@ -160,12 +161,15 @@ def get_command_status(db: Session, command_id: int) -> DeviceCommand | None:
 
 
 def resolve_matrix_user_id(db: Session, device_id: int, tenant_id: int) -> str:
-    """Return the preferred Matrix user-id for a tenant on a device.
+    """Return the Matrix user-id to use for a tenant on a device.
 
     Priority:
       1. Existing mapping for the target device
       2. Any existing mapping for this tenant on another device
-      3. Fallback to tenant_id
+      3. Tenant's external_id (the ID the user has on the source device)
+
+    Raises 400 if no external_id is set — the device user ID must never be
+    our internal DB tenant_id.  Set external_id on the tenant before enrolling.
     """
     mapping = (
         db.query(DeviceUserMapping)
@@ -186,7 +190,17 @@ def resolve_matrix_user_id(db: Session, device_id: int, tenant_id: int) -> str:
     if mapping and mapping.matrix_user_id:
         return str(mapping.matrix_user_id)
 
-    return str(tenant_id)
+    tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+    if tenant and tenant.external_id:
+        return str(tenant.external_id)
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Tenant {tenant_id} has no external_id. "
+            "Set an external_id (e.g. employee ID or badge number) on the tenant before enrolling on a device."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

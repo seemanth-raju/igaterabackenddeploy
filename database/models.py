@@ -371,7 +371,7 @@ class DeviceAssignmentLog(Base):
         Index("idx_dal_time", "performed_at"),
         Index("idx_dal_action", "action"),
         CheckConstraint(
-            "action IN ('assign','revoke','update','enroll','unenroll','capture','extract_fingerprint','enroll_site')",
+            "action IN ('assign','revoke','update','enroll','unenroll','capture','extract_fingerprint','enroll_site','extract_face','extract_card','sync_tenants')",
             name="device_assignment_log_action_check",
         ),
     )

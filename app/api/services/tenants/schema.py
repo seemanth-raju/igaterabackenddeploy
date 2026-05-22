@@ -38,7 +38,7 @@ class TenantCreate(BaseModel):
         default=None,
         description="Super-admin only. Target company for this tenant. Ignored for non-super-admin users.",
     )
-    external_id: str | None = Field(default=None, max_length=50)
+    external_id: str = Field(..., min_length=1, max_length=50, description="Employee/badge ID used as the user-id on devices. Must be unique per company.")
     full_name: str = Field(..., min_length=1, max_length=15, description="Max 15 chars — device hardware limit.")
     email: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(default=None, max_length=50)
@@ -215,3 +215,10 @@ class ExtractFaceRequest(BaseModel):
 
     device_id: int = Field(..., description="Device the user has already scanned their face on.")
     face_no: int = Field(default=1, ge=1, le=30, description="Face slot (1–30).")
+
+
+class ExtractCardRequest(BaseModel):
+    """Request body for POST /tenants/{id}/extract-card."""
+
+    device_id: int = Field(..., description="Device the user has already tapped their card on.")
+    card_no: int = Field(default=1, ge=1, le=2, description="Card slot (1 or 2).")

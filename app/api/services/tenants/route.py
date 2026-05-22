@@ -14,6 +14,7 @@ from app.api.services.tenants.enrollment import (
     enroll_to_device,
     enroll_to_devices_bulk,
     enroll_to_site,
+    extract_card_from_device,
     extract_face_from_device,
     extract_fingerprint_from_device,
     register_and_capture_card,
@@ -35,6 +36,7 @@ from app.api.services.tenants.schema import (
     DeviceAccessRead,
     DeviceAccessUpdate,
     DeviceEnrollRequest,
+    ExtractCardRequest,
     ExtractFaceRequest,
     SetCardRequest,
     SetPinRequest,
@@ -717,6 +719,36 @@ def extract_face_route(
         device_id=payload.device_id,
         db=db,
         face_no=payload.face_no,
+        performed_by=current_user.user_id,
+    )
+
+
+@router.post("/{tenant_id}/extract-card")
+def extract_card_route(
+    tenant_id: int,
+    payload: ExtractCardRequest,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """
+    Read a card number from a direct-mode device after the user has tapped.
+
+    Call this after `capture-card` (direct mode) and the user has tapped their card
+    at the device reader.  The card number is read from the device user profile and
+    stored in the DB.
+
+    Only needed for direct-mode devices.  For push-mode devices the card number is
+    saved automatically via the updatecmd callback — poll the capture-card
+    correlation_id for status instead.
+    """
+    _require_tenant_manager(current_user)
+    tenant = get_tenant(tenant_id, db)
+    _check_tenant_access(tenant, current_user)
+    return extract_card_from_device(
+        tenant_id=tenant_id,
+        device_id=payload.device_id,
+        db=db,
+        card_no=payload.card_no,
         performed_by=current_user.user_id,
     )
 

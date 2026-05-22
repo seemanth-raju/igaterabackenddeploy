@@ -72,12 +72,17 @@ def _to_import_response(result: dict) -> DeviceImportResponse:
         imported_user_count=result["imported_user_count"],
         created_tenants=result["created_tenants"],
         updated_tenants=result["updated_tenants"],
+        skipped_users=result.get("skipped_users", 0),
         created_mappings=result["created_mappings"],
         updated_mappings=result["updated_mappings"],
         created_device_accesses=result["created_device_accesses"],
         created_site_accesses=result["created_site_accesses"],
         imported_fingerprint_count=result["imported_fingerprint_count"],
         users_with_fingerprints=result["users_with_fingerprints"],
+        imported_face_count=result.get("imported_face_count", 0),
+        users_with_faces=result.get("users_with_faces", 0),
+        imported_card_count=result.get("imported_card_count", 0),
+        imported_pin_count=result.get("imported_pin_count", 0),
         warnings=result["warnings"],
         users=result["users"],
     )
@@ -139,6 +144,10 @@ async def upload_import_device_route(
     device_model: str | None = Form(default=None),
     users_excel: UploadFile = File(..., description="Matrix User_Configuration.xls or generic Excel with user_id/full_name columns"),
     fingerprints: list[UploadFile] = File(default=[], description="Optional fallback: fingerprint .dat files named {user_id}_finger_{index}.dat"),
+    on_duplicate: str = Form(
+        default="replace_if_changed",
+        description="How to handle users that already exist: 'replace' (always overwrite), 'skip' (leave untouched), 'replace_if_changed' (update only when name/active/validity changed)",
+    ),
     db: Session = Depends(get_db),
     current_user: AppUser | None = Depends(get_current_user_optional),
 ) -> DeviceImportResponse:
@@ -179,6 +188,7 @@ async def upload_import_device_route(
         device_vendor=device_vendor,
         device_model=device_model,
         db=db,
+        on_duplicate=on_duplicate,
     )
     return _to_import_response(result)
 
@@ -356,6 +366,34 @@ def push_extract_device_route(
             "Poll each correlation_id via GET /api/push/operations/{correlation_id} for status."
         ),
     }
+
+
+@router.post("/{device_id}/sync-tenants")
+def sync_tenants_route(
+    device_id: int,
+    db: Session = Depends(get_db),
+    current_user: AppUser = Depends(get_current_user),
+) -> dict:
+    """Push all enrolled tenants' credentials to this device.
+
+    Iterates every tenant already mapped to this device and queues (push mode) or
+    executes (direct mode) a full credential sync for each one.
+
+    Use this when:
+    - You replaced a device and need to re-populate all users.
+    - You added a new device that should mirror users from an existing device.
+    - A bulk re-sync is needed after a device reset.
+
+    For push-mode devices returns immediately — each tenant gets a correlation_id
+    that can be polled via GET /api/push/operations/{correlation_id}.
+    For direct-mode devices the sync is synchronous.
+    """
+    from app.api.services.tenants.enrollment import sync_all_tenants_to_device
+
+    _require_device_manager(current_user)
+    device = get_device(device_id, db)
+    _check_device_access(device, current_user)
+    return sync_all_tenants_to_device(device_id=device_id, db=db, performed_by=current_user.user_id)
 
 
 @router.delete("/{device_id}")

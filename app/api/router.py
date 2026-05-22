@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.services.access.route import router as access_router
 from app.api.services.auth.route import router as auth_router
 from app.api.services.companies.route import router as companies_router
+from app.api.services.dashboard.route import router as dashboard_router
 from app.api.services.device_mapping.route import router as device_mapping_router
 from app.api.services.devices.route import router as devices_router
 from app.api.services.groups.route import router as groups_router
@@ -14,6 +15,7 @@ from app.api.services.users.route import router as users_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth_router)
+api_router.include_router(dashboard_router)
 api_router.include_router(companies_router)
 api_router.include_router(sites_router)
 api_router.include_router(devices_router)

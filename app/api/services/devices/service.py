@@ -201,6 +201,15 @@ def _sanitize_name(profile: dict) -> str:
     return (name or fallback)[:15]
 
 
+def _tenant_has_changes(tenant: Tenant, profile: dict) -> bool:
+    """Return True if any tracked field differs between the existing tenant and the incoming profile."""
+    return (
+        tenant.full_name != _sanitize_name(profile)
+        or tenant.is_active != ((profile.get("user_active") or "1").strip() != "0")
+        or tenant.global_access_till != _parse_valid_till(profile)
+    )
+
+
 def _find_tenant_for_import(company_id: UUID, device_id: int, matrix_user_id: str, external_id: str | None, db: Session) -> Tenant | None:
     existing_mapping = (
         db.query(DeviceUserMapping)
@@ -232,7 +241,16 @@ def _upsert_tenant_for_import(
     device_id: int,
     profile: dict,
     db: Session,
-) -> tuple[Tenant, bool]:
+    on_duplicate: str = "replace",
+) -> tuple[Tenant, bool, bool]:
+    """Upsert a tenant for import. Returns (tenant, created, skipped).
+
+    on_duplicate controls what happens when the tenant already exists:
+      "replace"            — always overwrite profile fields (default)
+      "skip"               — leave existing tenant untouched
+      "replace_if_changed" — only overwrite if name/active/validity changed
+    skipped=True means the tenant existed and its profile was NOT updated.
+    """
     matrix_user_id = (
         (profile.get("user_id") or "").strip()
         or (profile.get("ref_user_id") or "").strip()
@@ -246,7 +264,6 @@ def _upsert_tenant_for_import(
     valid_till = _parse_valid_till(profile)
     is_active = (profile.get("user_active") or "1").strip() != "0"
     full_name = _sanitize_name(profile)
-    created = False
 
     if tenant is None:
         ensure_company_user_quota(company_id, db)
@@ -262,14 +279,19 @@ def _upsert_tenant_for_import(
         )
         db.add(tenant)
         db.flush()
-        created = True
-        return tenant, created
+        return tenant, True, False
 
     if tenant.company_id != company_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Tenant {tenant.tenant_id} belongs to another company",
         )
+
+    if on_duplicate == "skip":
+        return tenant, False, True
+
+    if on_duplicate == "replace_if_changed" and not _tenant_has_changes(tenant, profile):
+        return tenant, False, True
 
     if external_id and tenant.external_id != external_id:
         tenant.external_id = external_id
@@ -278,7 +300,7 @@ def _upsert_tenant_for_import(
     tenant.is_access_enabled = is_active
     tenant.global_access_till = valid_till
     tenant.group_id = group_id
-    return tenant, created
+    return tenant, False, False
 
 
 def _upsert_mapping_for_import(
@@ -815,6 +837,7 @@ def import_enrollment_device(payload: DeviceImportRequest, current_user: AppUser
     users: list[dict] = []
     created_tenants = 0
     updated_tenants = 0
+    skipped_users = 0
     created_mappings = 0
     updated_mappings = 0
     created_device_accesses = 0
@@ -823,7 +846,7 @@ def import_enrollment_device(payload: DeviceImportRequest, current_user: AppUser
     users_with_fingerprints = 0
 
     for profile in profiles:
-        tenant, tenant_created = _upsert_tenant_for_import(
+        tenant, tenant_created, tenant_skipped = _upsert_tenant_for_import(
             company_id=company_id,
             group_id=group.group_id,
             device_id=device.device_id,
@@ -853,7 +876,8 @@ def import_enrollment_device(payload: DeviceImportRequest, current_user: AppUser
         )
 
         created_tenants += 1 if tenant_created else 0
-        updated_tenants += 0 if tenant_created else 1
+        updated_tenants += 1 if (not tenant_created and not tenant_skipped) else 0
+        skipped_users += 1 if tenant_skipped else 0
         created_mappings += 1 if mapping_created else 0
         updated_mappings += 0 if mapping_created else 1
         created_site_accesses += 1 if site_access_created else 0
@@ -869,8 +893,12 @@ def import_enrollment_device(payload: DeviceImportRequest, current_user: AppUser
             "is_active": tenant.is_active,
             "valid_till": mapping.valid_till,
             "finger_count": imported_fingers,
+            "face_count": 0,
+            "card_count": 0,
+            "has_pin": False,
             "tenant_created": tenant_created,
             "mapping_created": mapping_created,
+            "tenant_skipped": tenant_skipped,
         })
 
     try:
@@ -893,12 +921,17 @@ def import_enrollment_device(payload: DeviceImportRequest, current_user: AppUser
         "imported_user_count": len(users),
         "created_tenants": created_tenants,
         "updated_tenants": updated_tenants,
+        "skipped_users": skipped_users,
         "created_mappings": created_mappings,
         "updated_mappings": updated_mappings,
         "created_device_accesses": created_device_accesses,
         "created_site_accesses": created_site_accesses,
         "imported_fingerprint_count": imported_fingerprint_count,
         "users_with_fingerprints": users_with_fingerprints,
+        "imported_face_count": 0,
+        "users_with_faces": 0,
+        "imported_card_count": 0,
+        "imported_pin_count": 0,
         "warnings": warnings,
         "users": users,
     }
@@ -1024,7 +1057,6 @@ def _parse_excel_profiles(excel_bytes: bytes, filename: str = "") -> list[dict]:
             "has_face": has_face,
         })
 
-    wb.close()
     return profiles
 
 
@@ -1055,6 +1087,7 @@ def import_from_upload(
     device_username: str | None,
     device_password: str | None,
     db: Session,
+    on_duplicate: str = "replace_if_changed",
 ) -> dict:
     """Import tenants from an uploaded Excel + optional direct device biometric extraction.
 
@@ -1149,7 +1182,7 @@ def import_from_upload(
 
     # Process each user row
     users: list[dict] = []
-    created_tenants = updated_tenants = 0
+    created_tenants = updated_tenants = skipped_users = 0
     created_mappings = updated_mappings = 0
     created_site_accesses = created_device_accesses = 0
     imported_fingerprint_count = users_with_fingerprints = 0
@@ -1157,13 +1190,36 @@ def import_from_upload(
     imported_card_count = imported_pin_count = 0
 
     for profile in profiles:
-        tenant, tenant_created = _upsert_tenant_for_import(
+        tenant, tenant_created, tenant_skipped = _upsert_tenant_for_import(
             company_id=company_id,
             group_id=group.group_id,
             device_id=device.device_id,
             profile=profile,
             db=db,
+            on_duplicate=on_duplicate,
         )
+
+        # "skip" mode: leave existing users completely untouched
+        if tenant_skipped and on_duplicate == "skip":
+            skipped_users += 1
+            matrix_user_id_raw = (profile.get("user_id") or profile.get("ref_user_id") or "").strip()
+            users.append({
+                "tenant_id": tenant.tenant_id,
+                "matrix_user_id": matrix_user_id_raw,
+                "external_id": tenant.external_id,
+                "full_name": tenant.full_name,
+                "is_active": tenant.is_active,
+                "valid_till": None,
+                "finger_count": 0,
+                "face_count": 0,
+                "card_count": 0,
+                "has_pin": False,
+                "tenant_created": False,
+                "mapping_created": False,
+                "tenant_skipped": True,
+            })
+            continue
+
         mapping, mapping_created = _upsert_mapping_for_import(tenant, device, profile, db)
         site_access, site_access_created = _upsert_site_access_for_import(
             tenant_id=tenant.tenant_id,
@@ -1221,7 +1277,8 @@ def import_from_upload(
             imported_pin = 1
 
         created_tenants += 1 if tenant_created else 0
-        updated_tenants += 0 if tenant_created else 1
+        updated_tenants += 1 if (not tenant_created and not tenant_skipped) else 0
+        skipped_users += 1 if tenant_skipped else 0
         created_mappings += 1 if mapping_created else 0
         updated_mappings += 0 if mapping_created else 1
         created_site_accesses += 1 if site_access_created else 0
@@ -1246,6 +1303,7 @@ def import_from_upload(
             "has_pin": bool(imported_pin),
             "tenant_created": tenant_created,
             "mapping_created": mapping_created,
+            "tenant_skipped": tenant_skipped,
         })
 
     try:
@@ -1268,6 +1326,7 @@ def import_from_upload(
         "imported_user_count": len(users),
         "created_tenants": created_tenants,
         "updated_tenants": updated_tenants,
+        "skipped_users": skipped_users,
         "created_mappings": created_mappings,
         "updated_mappings": updated_mappings,
         "created_device_accesses": created_device_accesses,

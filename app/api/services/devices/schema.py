@@ -109,8 +109,12 @@ class ImportedTenantRead(BaseModel):
     is_active: bool
     valid_till: datetime | None = None
     finger_count: int = 0
+    face_count: int = 0
+    card_count: int = 0
+    has_pin: bool = False
     tenant_created: bool
     mapping_created: bool
+    tenant_skipped: bool = False
 
 
 class DeviceImportResponse(BaseModel):
@@ -121,11 +125,16 @@ class DeviceImportResponse(BaseModel):
     imported_user_count: int
     created_tenants: int
     updated_tenants: int
+    skipped_users: int = 0
     created_mappings: int
     updated_mappings: int
     created_device_accesses: int
     created_site_accesses: int
     imported_fingerprint_count: int = 0
     users_with_fingerprints: int = 0
+    imported_face_count: int = 0
+    users_with_faces: int = 0
+    imported_card_count: int = 0
+    imported_pin_count: int = 0
     warnings: list[str] = Field(default_factory=list)
     users: list[ImportedTenantRead] = Field(default_factory=list)

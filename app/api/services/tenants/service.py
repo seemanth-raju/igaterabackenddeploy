@@ -10,6 +10,7 @@ from app.api.services.companies.service import ensure_company_user_quota
 from app.api.services.groups.service import validate_group_selection
 from app.api.services.tenants.schema import TenantCreate, TenantUpdate
 from database.models import AccessEvent, Credential, DeviceUserMapping, Tenant
+from sqlalchemy import func as _sa_func
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,22 @@ def update_tenant(tenant_id: int, payload: TenantUpdate, db: Session) -> Tenant:
     updated = payload.model_fields_set
 
     if "external_id" in updated:
+        old_external_id = tenant.external_id
         tenant.external_id = payload.external_id
+        if payload.external_id and old_external_id != payload.external_id:
+            now = db.query(_sa_func.current_timestamp()).scalar()
+            (
+                db.query(DeviceUserMapping)
+                .filter(DeviceUserMapping.tenant_id == tenant_id)
+                .update(
+                    {
+                        DeviceUserMapping.matrix_user_id: payload.external_id,
+                        DeviceUserMapping.is_synced: False,
+                        DeviceUserMapping.updated_at: now,
+                    },
+                    synchronize_session=False,
+                )
+            )
     if "group_id" in updated:
         if payload.group_id is None:
             raise HTTPException(

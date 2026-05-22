@@ -192,6 +192,35 @@ def _backend_headers(token: str | None) -> dict:
     return {}
 
 
+def _format_import_users(users: list[dict]) -> list[dict]:
+    """Convert raw API user dicts into a clean display table.
+
+    Shows external_id as 'User ID' — tenant_id is our internal DB key and
+    is never shown in the migration UI.
+    """
+    rows = []
+    for u in users:
+        if u.get("tenant_created"):
+            import_status = "Created"
+        elif u.get("tenant_skipped"):
+            import_status = "Skipped (unchanged)"
+        else:
+            import_status = "Updated"
+
+        rows.append({
+            "User ID":   u.get("external_id") or u.get("matrix_user_id") or "",
+            "Name":      u.get("full_name", ""),
+            "Active":    "Yes" if u.get("is_active") else "No",
+            "Valid Till": str(u["valid_till"])[:10] if u.get("valid_till") else "",
+            "Status":    import_status,
+            "Fingers":   u.get("finger_count", 0),
+            "Faces":     u.get("face_count", 0),
+            "Cards":     u.get("card_count", 0),
+            "PIN":       "Yes" if u.get("has_pin") else "",
+        })
+    return rows
+
+
 def fetch_groups(backend_api: str, token: str | None) -> list[dict]:
     """Return list of {group_id, name, code} from backend, or [] on failure."""
     try:
@@ -295,6 +324,23 @@ with st.sidebar:
 
     site_id = st.number_input("Site ID", min_value=1, value=1, step=1)
     company_id_override = st.text_input("Company ID (super-admin only)", value="")
+
+    st.divider()
+    st.header("🔁 Duplicate Handling")
+    on_duplicate = st.radio(
+        "If user already exists",
+        options=["replace_if_changed", "skip", "replace"],
+        format_func=lambda x: {
+            "replace_if_changed": "Update only if details changed",
+            "skip": "Skip — leave existing users untouched",
+            "replace": "Always overwrite existing users",
+        }[x],
+        help=(
+            "replace_if_changed: update name/active/validity only when something differs (recommended).\n"
+            "skip: never touch existing users.\n"
+            "replace: always overwrite, even if nothing changed."
+        ),
+    )
 
     st.divider()
     st.caption(f"Backend: `{backend_api}`")
@@ -485,6 +531,7 @@ with tab_device:
                 "site_id":  str(int(site_id)),
                 "device_vendor": dev_vendor or "Matrix",
                 "device_model":  dev_model or "Panel Lite",
+                "on_duplicate": on_duplicate,
             }
             if device_info.get("mac"):
                 form_data["device_mac"] = device_info["mac"]
@@ -503,15 +550,17 @@ with tab_device:
                     if resp.status_code == 201:
                         result = resp.json()
                         st.success("Upload complete!")
-                        r1, r2, r3, r4 = st.columns(4)
-                        r1.metric("Imported",   result.get("imported_user_count", 0))
-                        r2.metric("Created",    result.get("created_tenants", 0))
-                        r3.metric("Updated",    result.get("updated_tenants", 0))
-                        r4.metric("Fingerprints", result.get("imported_fingerprint_count", 0))
+                        r1, r2, r3, r4, r5 = st.columns(5)
+                        r1.metric("Imported",     result.get("imported_user_count", 0))
+                        r2.metric("Created",      result.get("created_tenants", 0))
+                        r3.metric("Updated",      result.get("updated_tenants", 0))
+                        r4.metric("Skipped",      result.get("skipped_users", 0))
+                        r5.metric("Fingerprints", result.get("imported_fingerprint_count", 0))
                         for w in result.get("warnings", []):
                             st.warning(w)
                         with st.expander("Per-user results"):
-                            st.dataframe(result.get("users", []), use_container_width=True)
+                            st.dataframe(_format_import_users(result.get("users", [])),
+                                         use_container_width=True, hide_index=True)
                     else:
                         st.error(f"Upload failed: HTTP {resp.status_code}")
                         try:
@@ -657,6 +706,7 @@ with tab_excel:
             form_data: dict = {
                 "group_id": str(int(group_id)),
                 "site_id":  str(int(site_id)),
+                "on_duplicate": on_duplicate,
             }
             if xl_dev_ip:
                 form_data["device_ip"]       = xl_dev_ip
@@ -685,13 +735,14 @@ with tab_excel:
                         result = resp.json()
                         st.success("Migration complete!")
 
-                        r1, r2, r3, r4, r5, r6 = st.columns(6)
+                        r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
                         r1.metric("Users Imported",    result.get("imported_user_count", 0))
                         r2.metric("Created",           result.get("created_tenants", 0))
                         r3.metric("Updated",           result.get("updated_tenants", 0))
-                        r4.metric("Fingers Stored",    result.get("imported_fingerprint_count", 0))
-                        r5.metric("Faces Stored",      result.get("imported_face_count", 0))
-                        r6.metric("Cards/PINs",
+                        r4.metric("Skipped",           result.get("skipped_users", 0))
+                        r5.metric("Fingers Stored",    result.get("imported_fingerprint_count", 0))
+                        r6.metric("Faces Stored",      result.get("imported_face_count", 0))
+                        r7.metric("Cards/PINs",
                                   result.get("imported_card_count", 0)
                                   + result.get("imported_pin_count", 0))
 
@@ -699,7 +750,8 @@ with tab_excel:
                             st.warning(w)
 
                         with st.expander("Per-user results"):
-                            st.dataframe(result.get("users", []), use_container_width=True)
+                            st.dataframe(_format_import_users(result.get("users", [])),
+                                         use_container_width=True, hide_index=True)
 
                     else:
                         st.error(f"Upload failed: HTTP {resp.status_code}")

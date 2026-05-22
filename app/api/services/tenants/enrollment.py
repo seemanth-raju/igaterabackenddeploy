@@ -1465,18 +1465,17 @@ def register_and_capture_card(
     The device beeps and waits for the user to tap their card. The card number is read
     by the device and sent back in updatecmd (card-1 field), then saved to the DB.
 
-    Returns a correlation_id to poll for completion.
+    Direct mode: creates user on device and triggers card enrollment mode synchronously.
+    Have the user tap their card, then call POST /tenants/{id}/extract-card to save the number.
+
+    Returns a correlation_id (push) or status dict (direct).
     """
     tenant = _get_tenant_or_404(tenant_id, db)
     device = _get_device_for_tenant_or_404(tenant, device_id, db)
     _sync_tenant_global_validity(tenant, valid_from, valid_till)
 
-    if device.communication_mode != "push":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Card capture via device scan is only supported for push-mode devices. "
-                   "Use set-card to assign a card number manually.",
-        )
+    if device.communication_mode == "direct":
+        return _direct_capture_card(tenant, device, db, card_no, performed_by, valid_from, valid_till)
 
     correlation_id = _make_correlation_id(tenant_id, device_id)
     push_create_user(
@@ -1499,6 +1498,185 @@ def register_and_capture_card(
         "message": (
             "User creation queued. Device will beep and wait for card tap on next poll. "
             "Poll GET /api/push/operations/{correlation_id} for status."
+        ),
+    }
+
+
+def _direct_capture_card(
+    tenant: "Tenant",
+    device: "Device",
+    db: Session,
+    card_no: int,
+    performed_by,
+    valid_from: "datetime | None",
+    valid_till: "datetime | None",
+) -> dict:
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant.tenant_id)
+
+    create_result = client.create_user(
+        user_id=matrix_user_id,
+        name=tenant.full_name,
+        active=is_access_active(tenant),
+        validity_end_date=_effective_valid_till_date(valid_till, tenant),
+    )
+    if not create_result["success"]:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Device rejected user creation: {create_result['response']}",
+        )
+
+    enroll_result = client.trigger_card_enrollment(matrix_user_id, card_no)
+
+    _upsert_mapping(tenant.tenant_id, device.device_id, db, synced=True,
+                    valid_from=valid_from, valid_till=valid_till)
+    _upsert_site_access_for_device(tenant.tenant_id, device, db, valid_from=valid_from, valid_till=valid_till)
+    _log_assignment(tenant.tenant_id, device.device_id, "enroll", db, performed_by=performed_by, synced=True)
+    db.commit()
+
+    return {
+        "tenant_id": tenant.tenant_id,
+        "device_id": device.device_id,
+        "mode": "direct",
+        "card_no": card_no,
+        "status": "enrollment_triggered" if enroll_result["success"] else "user_created",
+        "enrollment_triggered": enroll_result["success"],
+        "message": (
+            f"User created and card enrollment mode triggered (slot {card_no}). "
+            "Have the user tap their card at the device reader, then call "
+            "POST /tenants/{tenant_id}/extract-card to store the card number."
+            if enroll_result["success"]
+            else "User created on device but failed to trigger card enrollment mode. Try again."
+        ),
+    }
+
+
+def extract_card_from_device(
+    tenant_id: int,
+    device_id: int,
+    db: Session,
+    card_no: int = 1,
+    performed_by=None,
+) -> dict:
+    """Read a card number that the user has already tapped on a direct-mode device.
+
+    Call this after register_and_capture_card (direct mode) and the user has tapped
+    their card.  Reads card1/card2 from the device user profile and stores it in DB.
+
+    Push-mode devices handle this automatically via the updatecmd callback — use
+    the correlation_id from capture-card to poll progress instead.
+    """
+    tenant = _get_tenant_or_404(tenant_id, db)
+    device = _get_device_for_tenant_or_404(tenant, device_id, db)
+
+    if device.communication_mode != "direct":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "extract-card is only needed for direct-mode devices. "
+                "For push-mode devices, poll the correlation_id from capture-card."
+            ),
+        )
+
+    client = _make_direct_client(device)
+    matrix_user_id = resolve_matrix_user_id(db, device.device_id, tenant_id)
+
+    card_value = client.extract_card_from_user(matrix_user_id, card_no)
+    if not card_value:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No card found in slot {card_no} on device. Has the user tapped their card yet?",
+        )
+
+    _upsert_credential(tenant_id, db, "card", slot_index=card_no, raw_value=card_value)
+    _upsert_mapping(tenant_id, device_id, db, synced=True)
+    _log_assignment(tenant_id, device_id, "extract_card", db, performed_by=performed_by, synced=True)
+    db.commit()
+
+    return {
+        "tenant_id": tenant_id,
+        "device_id": device_id,
+        "mode": "direct",
+        "status": "success",
+        "card_no": card_no,
+        "card_value": card_value,
+        "message": f"Card number extracted from device (slot {card_no}) and stored.",
+    }
+
+
+def sync_all_tenants_to_device(
+    device_id: int,
+    db: Session,
+    performed_by=None,
+) -> dict:
+    """Push all enrolled tenants' credentials to a device.
+
+    Iterates every DeviceUserMapping for this device and calls enroll_to_device for each.
+    Use this when setting up a replacement device or adding a new device that should
+    receive all users already enrolled on other devices in the same company.
+
+    Returns immediately for push-mode devices (commands queued).
+    Synchronous for direct-mode devices.
+    """
+    device = _get_device_or_404(device_id, db)
+
+    mappings = (
+        db.query(DeviceUserMapping)
+        .filter(DeviceUserMapping.device_id == device_id)
+        .all()
+    )
+    if not mappings:
+        return {
+            "device_id": device_id,
+            "total": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "results": [],
+            "message": "No tenants are mapped to this device. Enroll tenants first.",
+        }
+
+    results: list[dict] = []
+    succeeded = 0
+    failed = 0
+
+    for mapping in mappings:
+        try:
+            result = enroll_to_device(
+                mapping.tenant_id, device_id, db,
+                performed_by=performed_by,
+                update_tenant_validity=False,
+            )
+            results.append({
+                "tenant_id": mapping.tenant_id,
+                "matrix_user_id": mapping.matrix_user_id,
+                "success": True,
+                "correlation_id": result.get("correlation_id"),
+                "mode": result.get("mode"),
+            })
+            succeeded += 1
+        except HTTPException as exc:
+            db.rollback()
+            results.append({
+                "tenant_id": mapping.tenant_id,
+                "matrix_user_id": mapping.matrix_user_id,
+                "success": False,
+                "error": exc.detail,
+            })
+            _log_assignment(mapping.tenant_id, device_id, "enroll", db,
+                            performed_by=performed_by, reason=exc.detail)
+            db.flush()
+            failed += 1
+
+    db.commit()
+    return {
+        "device_id": device_id,
+        "total": len(mappings),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+        "message": (
+            f"Sync complete: {succeeded}/{len(mappings)} tenant(s) queued/pushed successfully."
+            + (f" {failed} failed — see results for details." if failed else "")
         ),
     }
 

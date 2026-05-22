@@ -27,6 +27,7 @@
 17. [Organization Groups](#17-organization-groups)
 18. [Group Enrollment — Bulk Enroll a Whole Group](#18-group-enrollment--bulk-enroll-a-whole-group)
 19. [Device Migration — Import Users from an Existing Device](#19-device-migration--import-users-from-an-existing-device)
+20. [Dashboard](#20-dashboard)
 
 ---
 
@@ -1779,6 +1780,7 @@ All errors follow this shape:
 | Endpoint category | `staff` | `company_admin` | `super_admin` |
 |---|---|---|---|
 | Auth | ✅ | ✅ | ✅ |
+| Dashboard (`/dashboard`) | ✅ | ✅ | ✅ |
 | Tenants (own company) | ✅ | ✅ | ✅ |
 | Devices (own company) | ✅ | ✅ | ✅ |
 | Sites (own company) | ✅ | ✅ | ✅ |
@@ -3096,4 +3098,71 @@ After calling this endpoint:
 
 ---
 
-*Last updated: 2026-04-19*
+---
+
+## 20. Dashboard
+
+A single endpoint that aggregates all key metrics for the dashboard overview screen.
+
+### GET `/dashboard`
+
+Returns summary statistics and chart data for the authenticated company.
+
+**Query Parameters**
+
+| Param | Type | Description |
+|---|---|---|
+| `company_id` | UUID | Super-admin only — scope to a specific company. Ignored for other roles. |
+
+**Response `200`**
+```json
+{
+  "total_users": 42,
+  "active_locations": 3,
+  "connected_devices": 7,
+  "total_groups": 5,
+  "members_per_group": [
+    { "group_name": "Default", "member_count": 10 },
+    { "group_name": "HR", "member_count": 8 },
+    { "group_name": "Security", "member_count": 6 }
+  ],
+  "enrollment_status": {
+    "enrolled": 35,
+    "no_biometrics": 7
+  },
+  "users_by_type": [
+    { "tenant_type": "employee", "count": 42 }
+  ]
+}
+```
+
+**Response fields**
+
+| Field | Type | Description |
+|---|---|---|
+| `total_users` | int | Total tenant count for the company (all statuses) |
+| `active_locations` | int | Count of sites where `is_active = true` |
+| `connected_devices` | int | Count of devices where `is_active = true` |
+| `total_groups` | int | Count of active tenant groups (`is_active = true`) |
+| `members_per_group` | array | One entry per active group — group name and tenant count. Groups with no members are included with `member_count: 0`. Sorted alphabetically by group name. |
+| `enrollment_status.enrolled` | int | Tenants who have at least one credential stored (finger, face, card, or pin) |
+| `enrollment_status.no_biometrics` | int | Tenants with no credentials stored (`total_users - enrolled`) |
+| `users_by_type` | array | Tenant counts grouped by `tenant_type`. Each entry has `tenant_type` (e.g. `"employee"`) and `count`. |
+
+**Frontend usage**
+
+| Dashboard element | Field to use |
+|---|---|
+| TOTAL USERS card | `total_users` |
+| ACTIVE LOCATIONS card | `active_locations` |
+| CONNECTED DEVICES card | `connected_devices` |
+| TOTAL GROUPS card | `total_groups` |
+| Members per Group bar chart | `members_per_group` — x-axis: `group_name`, y-axis: `member_count` |
+| Enrollment Status donut chart | `enrollment_status` — `enrolled` (green), `no_biometrics` (orange) |
+| Users by Type donut chart | `users_by_type` — one slice per `tenant_type` |
+
+**Roles:** All authenticated roles (`staff`, `company_admin`, `super_admin`). Results are always scoped to the user's own company unless `super_admin` passes an explicit `company_id`.
+
+---
+
+*Last updated: 2026-05-22 (added: dashboard summary endpoint)*
