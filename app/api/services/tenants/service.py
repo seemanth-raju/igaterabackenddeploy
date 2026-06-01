@@ -49,6 +49,12 @@ def create_tenant(payload: TenantCreate, company_id: UUID, db: Session) -> Tenan
             detail="Tenant with same external_id already exists for this company",
         ) from exc
     db.refresh(tenant)
+
+    if tenant.external_id is None:
+        tenant.external_id = str(tenant.tenant_id)
+        db.commit()
+        db.refresh(tenant)
+
     return tenant
 
 

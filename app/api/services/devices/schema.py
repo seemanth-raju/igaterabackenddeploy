@@ -73,6 +73,7 @@ class DeviceRead(BaseModel):
     is_active: bool
     communication_mode: str
     status: str
+    last_heartbeat: datetime | None
     config: dict
     credential_types: list[str]
     created_at: datetime

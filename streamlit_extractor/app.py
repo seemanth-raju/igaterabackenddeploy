@@ -111,8 +111,10 @@ def _parse_user(body: str) -> dict | None:
         if rc and rc.strip() not in ("0", ""):
             return None
         uid = (root.findtext("user-id") or "").strip()
+        ref_uid = (root.findtext("ref-user-id") or uid).strip()
         if uid:
             return {"user_id": uid,
+                    "ref_user_id": ref_uid,
                     "full_name": (root.findtext("name") or uid).strip(),
                     "is_active": (root.findtext("user-active") or "1").strip() != "0"}
     except ET.ParseError:
@@ -123,7 +125,9 @@ def _parse_user(body: str) -> dict | None:
     uid = _e("user-id")
     if not uid:
         return None
-    return {"user_id": uid, "full_name": _e("name") or uid,
+    ref_uid = _e("ref-user-id") or uid
+    return {"user_id": uid, "ref_user_id": ref_uid,
+            "full_name": _e("name") or uid,
             "is_active": (_e("user-active") or "1").strip() != "0"}
 
 
@@ -511,7 +515,7 @@ with tab_device:
                 ws.title = "Users"
                 ws.append(["user_id", "ref_user_id", "full_name", "is_active", "valid_till", "user_index"])
                 for p in profiles:
-                    ws.append([p["user_id"], p["user_id"], p["full_name"],
+                    ws.append([p["user_id"], p.get("ref_user_id", p["user_id"]), p["full_name"],
                                "1" if p["is_active"] else "0", "", ""])
                 buf = io.BytesIO()
                 wb.save(buf)

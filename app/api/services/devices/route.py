@@ -33,6 +33,10 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 
 def _to_device_read(device) -> DeviceRead:
+    if device.communication_mode == "push":
+        effective_status = "online" if _heartbeat_online(device.last_heartbeat) else "offline"
+    else:
+        effective_status = device.status
     return DeviceRead(
         device_id=device.device_id,
         company_id=str(device.company_id) if device.company_id else None,
@@ -47,7 +51,8 @@ def _to_device_read(device) -> DeviceRead:
         use_https=device.use_https,
         is_active=device.is_active,
         communication_mode=device.communication_mode,
-        status=device.status,
+        status=effective_status,
+        last_heartbeat=device.last_heartbeat,
         config=device.config,
         credential_types=device.credential_types or ["finger"],
         created_at=device.created_at,

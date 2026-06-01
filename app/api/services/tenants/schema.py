@@ -1,11 +1,25 @@
+import re
 import zoneinfo
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 
 from app.api.services.groups.schema import TenantGroupRead
+
+_EXTERNAL_ID_RE = re.compile(r"^[A-Za-z0-9]{1,15}$")
+
+
+def _validate_external_id(v: str | None) -> str | None:
+    if v is None:
+        return v
+    if not _EXTERNAL_ID_RE.match(v):
+        raise ValueError(
+            "Reference ID format is wrong. "
+            "Only letters and numbers are allowed, no spaces or special characters, max 15 characters."
+        )
+    return v
 
 _IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
@@ -38,7 +52,7 @@ class TenantCreate(BaseModel):
         default=None,
         description="Super-admin only. Target company for this tenant. Ignored for non-super-admin users.",
     )
-    external_id: str = Field(..., min_length=1, max_length=50, description="Employee/badge ID used as the user-id on devices. Must be unique per company.")
+    external_id: str | None = Field(default=None, max_length=15, description="Reference ID used as the user-id on devices (e.g. employee number). Max 15 chars, letters and numbers only, no spaces or special characters. Auto-generated from tenant_id if omitted. Must be unique per company.")
     full_name: str = Field(..., min_length=1, max_length=15, description="Max 15 chars — device hardware limit.")
     email: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(default=None, max_length=50)
@@ -51,9 +65,19 @@ class TenantCreate(BaseModel):
         description="Single required group assignment for this tenant.",
     )
 
+    @field_validator("external_id")
+    @classmethod
+    def validate_external_id(cls, v: str | None) -> str | None:
+        return _validate_external_id(v)
+
 
 class TenantUpdate(BaseModel):
-    external_id: str | None = Field(default=None, max_length=50)
+    external_id: str | None = Field(default=None, max_length=15)
+
+    @field_validator("external_id")
+    @classmethod
+    def validate_external_id(cls, v: str | None) -> str | None:
+        return _validate_external_id(v)
     full_name: str | None = Field(default=None, min_length=1, max_length=15)
     email: str | None = Field(default=None, max_length=255)
     phone: str | None = Field(default=None, max_length=50)

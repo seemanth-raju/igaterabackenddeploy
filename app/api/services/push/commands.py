@@ -166,10 +166,8 @@ def resolve_matrix_user_id(db: Session, device_id: int, tenant_id: int) -> str:
     Priority:
       1. Existing mapping for the target device
       2. Any existing mapping for this tenant on another device
-      3. Tenant's external_id (the ID the user has on the source device)
-
-    Raises 400 if no external_id is set — the device user ID must never be
-    our internal DB tenant_id.  Set external_id on the tenant before enrolling.
+      3. Tenant's external_id (the Reference ID the user entered during creation)
+      4. str(tenant_id) as final fallback (for tenants without an external_id)
     """
     mapping = (
         db.query(DeviceUserMapping)
@@ -191,15 +189,12 @@ def resolve_matrix_user_id(db: Session, device_id: int, tenant_id: int) -> str:
         return str(mapping.matrix_user_id)
 
     tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-    if tenant and tenant.external_id:
-        return str(tenant.external_id)
+    if tenant:
+        return str(tenant.external_id) if tenant.external_id else str(tenant.tenant_id)
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"Tenant {tenant_id} has no external_id. "
-            "Set an external_id (e.g. employee ID or badge number) on the tenant before enrolling on a device."
-        ),
+        detail=f"Tenant {tenant_id} not found.",
     )
 
 

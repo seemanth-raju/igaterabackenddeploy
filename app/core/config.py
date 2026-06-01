@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     # Push API settings
-    push_api_device_offline_seconds: int = 120
+    push_api_device_offline_seconds: int = 10
     push_api_default_poll_interval: int = 5
 
     # Local path for storing extracted fingerprint templates
